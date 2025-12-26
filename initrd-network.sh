@@ -10,7 +10,7 @@ ipv4_addr=$2
 ipv4_gateway=$3
 ipv6_addr=$4
 ipv6_gateway=$5
-is_in_china=$6
+# 第6个参数已废弃，不再使用 is_in_china
 
 DHCP_TIMEOUT=15
 DNS_FILE_TIMEOUT=5
@@ -22,17 +22,11 @@ TEST_TIMEOUT=10
 # HTTP 80
 # HTTPS/DOH 443
 # DOT 853
-if $is_in_china; then
-    ipv4_dns1='223.5.5.5'
-    ipv4_dns2='119.29.29.29' # 不开放 853
-    ipv6_dns1='2400:3200::1'
-    ipv6_dns2='2402:4e00::' # 不开放 853
-else
-    ipv4_dns1='1.1.1.1'
-    ipv4_dns2='8.8.8.8' # 不开放 80
-    ipv6_dns1='2606:4700:4700::1111'
-    ipv6_dns2='2001:4860:4860::8888' # 不开放 80
-fi
+# 固定使用国际 DNS 服务器
+ipv4_dns1='1.1.1.1'
+ipv4_dns2='8.8.8.8' # 不开放 80
+ipv6_dns1='2606:4700:4700::1111'
+ipv6_dns2='2001:4860:4860::8888' # 不开放 80
 
 # 找到主网卡
 # debian 11 initrd 没有 xargs awk
@@ -499,7 +493,8 @@ $dhcpv6_or_slaac && echo 1 >"$netconf/dhcpv6_or_slaac" || echo 0 >"$netconf/dhcp
 $should_disable_dhcpv4 && echo 1 >"$netconf/should_disable_dhcpv4" || echo 0 >"$netconf/should_disable_dhcpv4"
 $should_disable_accept_ra && echo 1 >"$netconf/should_disable_accept_ra" || echo 0 >"$netconf/should_disable_accept_ra"
 $should_disable_autoconf && echo 1 >"$netconf/should_disable_autoconf" || echo 0 >"$netconf/should_disable_autoconf"
-$is_in_china && echo 1 >"$netconf/is_in_china" || echo 0 >"$netconf/is_in_china"
+# is_in_china 已废弃，始终写入 0
+echo 0 >"$netconf/is_in_china"
 echo "$ethx" >"$netconf/ethx"
 echo "$mac_addr" >"$netconf/mac_addr"
 echo "$ipv4_addr" >"$netconf/ipv4_addr"
