@@ -3,9 +3,8 @@
 # shellcheck disable=SC2086
 
 set -eE
+# 配置文件下载地址 - 请修改为您自己的仓库地址
 confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
-confhome_cn=https://cnb.cool/bin456789/reinstall/-/git/raw/main
-# confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/bin456789/reinstall/main
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0004
@@ -189,23 +188,40 @@ mask2cidr() {
     echo $(($2 + (${#x} / 4)))
 }
 
+# 始终返回 false，不使用中国镜像源
 is_in_china() {
-    [ "$force_cn" = 1 ] && return 0
+    return 1
+}
 
-    if [ -z "$_loc" ]; then
-        # www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
-        # 没有ipv6 www.visa.cn
-        # 没有ipv6 www.bose.cn
-        # 没有ipv6 www.garmin.com.cn
-        # 备用 www.prologis.cn
-        # 备用 www.autodesk.com.cn
-        # 备用 www.keysight.com.cn
-        if ! _loc=$(curl -L http://www.qualcomm.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2 | grep .); then
-            error_and_exit "Can not get location."
-        fi
-        echo "Location: $_loc" >&2
+# 基于 IP 地理位置检测时区
+# 使用多个备用 API 确保可靠性
+detect_timezone() {
+    local tz=""
+
+    # 尝试 ipapi.co (免费，无需 API key)
+    if [ -z "$tz" ]; then
+        tz=$(curl -sL --connect-timeout 5 "https://ipapi.co/timezone" 2>/dev/null | grep -E '^[A-Za-z_]+/[A-Za-z_]+' || true)
     fi
-    [ "$_loc" = CN ]
+
+    # 尝试 ip-api.com (备用)
+    if [ -z "$tz" ]; then
+        tz=$(curl -sL --connect-timeout 5 "http://ip-api.com/line/?fields=timezone" 2>/dev/null | grep -E '^[A-Za-z_]+/[A-Za-z_]+' || true)
+    fi
+
+    # 尝试 worldtimeapi.org (备用)
+    if [ -z "$tz" ]; then
+        tz=$(curl -sL --connect-timeout 5 "http://worldtimeapi.org/api/ip" 2>/dev/null | grep -o '"timezone":"[^"]*"' | cut -d'"' -f4 || true)
+    fi
+
+    # 如果都失败，使用 UTC
+    if [ -z "$tz" ]; then
+        tz="UTC"
+        warn "Could not detect timezone, using UTC"
+    else
+        info false "Detected timezone: $tz"
+    fi
+
+    echo "$tz"
 }
 
 is_in_windows() {
@@ -3028,9 +3044,8 @@ build_extra_cmdline() {
     # 会将 extra.xxx=yyy 写入新系统的 /etc/modprobe.d/local.conf
     # https://answers.launchpad.net/ubuntu/+question/249456
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
-    for key in confhome hold force_boot_mode force_cn force_old_windows_setup cloud_image main_disk \
-        elts deb_mirror \
-        ssh_port rdp_port web_port allow_ping; do
+    for key in confhome hold force_boot_mode cloud_image main_disk \
+        ssh_port web_port timezone; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -3564,17 +3579,17 @@ EOF
 
 get_ip_conf_cmd() {
     collect_netconf >&2
-    is_in_china && is_in_china=true || is_in_china=false
 
     sh=/initrd-network.sh
+    # 第6个参数为保留参数（原 is_in_china，已废弃，传 false 以保持兼容）
     if is_found_ipv4_netconf && is_found_ipv6_netconf && [ "$ipv4_mac" = "$ipv6_mac" ]; then
-        echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway' '$is_in_china'"
+        echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway' 'false'"
     else
         if is_found_ipv4_netconf; then
-            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' '' '$is_in_china'"
+            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' '' 'false'"
         fi
         if is_found_ipv6_netconf; then
-            echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway' '$is_in_china'"
+            echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway' 'false'"
         fi
     fi
 }
@@ -4247,19 +4262,8 @@ if false && [[ "$confhome" = http*://raw.githubusercontent.com/* ]]; then
     confhome=$(echo "$confhome" | sed "s/main$/$commit/")
 fi
 
-# 设置国内代理
-# 要在使用 wmic 前设置，否则国内机器会从国外源下载 wmic.ps1
-# gitee 不支持ipv6
-# jsdelivr 有12小时缓存
-# https://github.com/XIU2/UserScript/blob/master/GithubEnhanced-High-Speed-Download.user.js#L31
-if is_in_china; then
-    if [ -n "$confhome_cn" ]; then
-        confhome=$confhome_cn
-    elif [ -n "$github_proxy" ] && [[ "$confhome" = http*://raw.githubusercontent.com/* ]]; then
-        confhome=${confhome/http:\/\//https:\/\/}
-        confhome=${confhome/https:\/\/raw.githubusercontent.com/$github_proxy}
-    fi
-fi
+# 检测时区（基于 IP 地理位置）
+timezone=$(detect_timezone)
 
 # 检查内存
 # 会用到 wmic，因此要在设置国内 confhome 后使用
