@@ -1,6 +1,6 @@
 #cloud-config
 datasource_list: [None]
-timezone: Asia/Shanghai
+timezone: @TIMEZONE@
 disable_root: false
 ssh_pwauth: true
 users:

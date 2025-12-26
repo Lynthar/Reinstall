@@ -619,8 +619,9 @@ is_any_ipv4_has_internet() {
     grep -q 1 /dev/netconf/*/ipv4_has_internet
 }
 
+# 始终返回 false，不使用中国镜像源
 is_in_china() {
-    grep -q 1 /dev/netconf/*/is_in_china
+    return 1
 }
 
 # 有 dhcpv4 不等于有网关，例如 vultr 纯 ipv6
@@ -1468,7 +1469,7 @@ install_alpine() {
 
     # 安装其他部件
     chroot /os setup-keymap us us
-    chroot /os setup-timezone -i Asia/Shanghai
+    chroot /os setup-timezone -i "${timezone:-UTC}"
     # 3.21 默认是 chrony
     # 3.22 默认是 busybox ntp
     printf '\n' | chroot /os setup-ntp || true
@@ -1888,15 +1889,15 @@ basic_init() {
     os_dir=$1
 
     # 此时不能用
-    # chroot $os_dir timedatectl set-timezone Asia/Shanghai
+    # chroot $os_dir timedatectl set-timezone $timezone
     # Failed to create bus connection: No such file or directory
 
     # debian 11 没有 systemd-firstboot
     if is_have_cmd_on_disk $os_dir systemd-firstboot; then
         if chroot $os_dir systemd-firstboot --help | grep -wq '\--force'; then
-            chroot $os_dir systemd-firstboot --timezone=Asia/Shanghai --force
+            chroot $os_dir systemd-firstboot --timezone="${timezone:-UTC}" --force
         else
-            chroot $os_dir systemd-firstboot --timezone=Asia/Shanghai
+            chroot $os_dir systemd-firstboot --timezone="${timezone:-UTC}"
         fi
     fi
 
@@ -2917,6 +2918,9 @@ download_cloud_init_config() {
     # 不能用 sed 替换，因为含有特殊字符
     content=$(cat $ci_file)
     echo "${content//@PASSWORD@/$(get_password_linux_sha512)}" >$ci_file
+
+    # 修改时区
+    sed -i "s/@TIMEZONE@/${timezone:-UTC}/g" $ci_file
 
     # 修改 ssh 端口
     if is_need_change_ssh_port; then
