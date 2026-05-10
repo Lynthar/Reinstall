@@ -77,21 +77,13 @@ Usage: $reinstall_____ anolis      7|8|23
                        aosc
                        redhat      --img="http://access.cdn.redhat.com/xxx.qcow2"
                        dd          --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
-                       windows     --image-name="windows xxx yyy" --lang=xx-yy
-                       windows     --image-name="windows xxx yyy" --iso="http://xxx.com/xxx.iso"
 
-       Options:        For Linux/Windows:
-                       [--password  PASSWORD]
+       Options:        [--password  PASSWORD]
                        [--ssh-key   KEY]
                        [--ssh-port  PORT]
                        [--web-port  PORT]
 
-                       For Windows Only:
-                       [--allow-ping]
-                       [--rdp-port   PORT]
-                       [--add-driver INF_OR_DIR]
-
-Manual: https://github.com/bin456789/reinstall
+Manual: https://github.com/Lynthar/Reinstall
 
 EOF
     exit 1
@@ -726,432 +718,6 @@ assert_cpu_supports_x86_64_v3() {
     fi
 }
 
-# sr-latn-rs 到 sr-latn
-en_us() {
-    echo "$lang" | awk -F- '{print $1"-"$2}'
-
-    # zh-hk 可回落到 zh-tw
-    if [ "$lang" = zh-hk ]; then
-        echo zh-tw
-    fi
-}
-
-# fr-ca 到 ca
-us() {
-    # 葡萄牙准确对应 pp
-    if [ "$lang" = pt-pt ]; then
-        echo pp
-        return
-    fi
-    # 巴西准确对应 pt
-    if [ "$lang" = pt-br ]; then
-        echo pt
-        return
-    fi
-
-    echo "$lang" | awk -F- '{print $2}'
-
-    # hk 额外回落到 tw
-    if [ "$lang" = zh-hk ]; then
-        echo tw
-    fi
-}
-
-# fr-ca 到 fr-fr
-en_en() {
-    echo "$lang" | awk -F- '{print $1"-"$1}'
-
-    # en-gb 额外回落到 en-us
-    if [ "$lang" = en-gb ]; then
-        echo en-us
-    fi
-}
-
-# fr-ca 到 fr
-en() {
-    # 巴西/葡萄牙回落到葡萄牙语
-    if [ "$lang" = pt-br ] || [ "$lang" = pt-pt ]; then
-        echo "pp"
-        return
-    fi
-
-    echo "$lang" | awk -F- '{print $1}'
-}
-
-english() {
-    case "$lang" in
-    ar-sa) echo Arabic ;;
-    bg-bg) echo Bulgarian ;;
-    cs-cz) echo Czech ;;
-    da-dk) echo Danish ;;
-    de-de) echo German ;;
-    el-gr) echo Greek ;;
-    en-gb) echo Eng_Intl ;;
-    en-us) echo English ;;
-    es-es) echo Spanish ;;
-    es-mx) echo Spanish_Latam ;;
-    et-ee) echo Estonian ;;
-    fi-fi) echo Finnish ;;
-    fr-ca) echo FrenchCanadian ;;
-    fr-fr) echo French ;;
-    he-il) echo Hebrew ;;
-    hr-hr) echo Croatian ;;
-    hu-hu) echo Hungarian ;;
-    it-it) echo Italian ;;
-    ja-jp) echo Japanese ;;
-    ko-kr) echo Korean ;;
-    lt-lt) echo Lithuanian ;;
-    lv-lv) echo Latvian ;;
-    nb-no) echo Norwegian ;;
-    nl-nl) echo Dutch ;;
-    pl-pl) echo Polish ;;
-    pt-pt) echo Portuguese ;;
-    pt-br) echo Brazilian ;;
-    ro-ro) echo Romanian ;;
-    ru-ru) echo Russian ;;
-    sk-sk) echo Slovak ;;
-    sl-si) echo Slovenian ;;
-    sr-latn | sr-latn-rs) echo Serbian_Latin ;;
-    sv-se) echo Swedish ;;
-    th-th) echo Thai ;;
-    tr-tr) echo Turkish ;;
-    uk-ua) echo Ukrainian ;;
-    zh-cn) echo ChnSimp ;;
-    zh-hk | zh-tw) echo ChnTrad ;;
-    esac
-}
-
-parse_windows_image_name() {
-    set -- $image_name
-
-    if ! [ "$1" = windows ]; then
-        return 1
-    fi
-    shift
-
-    if [ "$1" = server ]; then
-        server=server
-        shift
-    fi
-
-    version=$1
-    shift
-
-    if [ "$1" = r2 ]; then
-        version+=" r2"
-        shift
-    fi
-
-    edition=
-    while [ $# -gt 0 ]; do
-        case "$1" in
-        # windows 10 enterprise n ltsc 2021
-        k | n | kn) ;;
-        *)
-            if [ -n "$edition" ]; then
-                edition+=" "
-            fi
-            edition+="$1"
-            ;;
-        esac
-        shift
-    done
-}
-
-is_have_arm_version() {
-    case "$version" in
-    10)
-        case "$edition" in
-        home | 'home single language' | pro | education | enterprise | 'pro education' | 'pro for workstations') return ;;
-        'iot enterprise') return ;;
-        # arm ltsc 只有 2021 有 iso
-        'enterprise ltsc 2021' | 'iot enterprise ltsc 2021') return ;;
-        esac
-        ;;
-    11) return ;;
-    esac
-    return 1
-}
-
-find_windows_iso() {
-    parse_windows_image_name || error_and_exit "--image-name wrong: $image_name"
-    if ! { [ "$version" = 8 ] || [ "$version" = 8.1 ]; } && [ -z "$edition" ]; then
-        error_and_exit "Edition is not set."
-    fi
-
-    if [ -z "$lang" ]; then
-        lang=en-us
-    fi
-    langs="$lang $(en_us) $(us) $(en_en) $(en)"
-    langs=$(echo "$langs" | xargs -n 1 | awk '!seen[$0]++')
-    full_lang=$(english)
-
-    case "$basearch" in
-    x86_64) arch_win=x64 ;;
-    aarch64) arch_win=arm64 ;;
-    esac
-
-    get_windows_iso_link
-}
-
-get_windows_iso_link() {
-    get_label_msdn() {
-        if [ -n "$server" ]; then
-            case "$version" in
-            2008 | '2008 r2')
-                case "$edition" in
-                serverweb | serverwebcore) echo _ ;;
-                serverstandard | serverstandardcore) echo _ ;;
-                serverenterprise | serverenterprisecore) echo _ ;;
-                serverdatacenter | serverdatacentercore) echo _ ;;
-                esac
-                ;;
-            # massgrave 不提供 2012 下载
-            '2012 r2' | \
-                2016 | 2019 | 2022 | 2025)
-                case "$edition" in
-                serverstandard | serverstandardcore) echo _ ;;
-                serverdatacenter | serverdatacentercore) echo _ ;;
-                esac
-                ;;
-            esac
-        else
-            case "$version" in
-            vista)
-                case "$edition" in
-                starter)
-                    case "$arch_win" in
-                    x86) echo _ ;;
-                    esac
-                    ;;
-                homebasic | homepremium | ultimate) echo _ ;;
-                business | enterprise) echo "$edition" ;;
-                esac
-                ;;
-            7)
-                case "$edition" in
-                starter)
-                    case "$arch_win" in
-                    x86) echo starter ;;
-                    esac
-                    ;;
-                homebasic)
-                    case "$arch_win" in
-                    x86) echo "home basic" ;;
-                    esac
-                    ;;
-                homepremium) echo "home premium" ;;
-                professional | enterprise | ultimate) echo "$edition" ;;
-                esac
-                ;;
-            8 | 8.1)
-                case "$edition" in
-                '') echo _ ;; # windows 8.x core
-                pro | enterprise) echo "$edition" ;;
-                esac
-                ;;
-            10)
-                case "$edition" in
-                home | 'home single language') echo consumer ;;
-                pro | enterprise) echo business ;;
-                education | 'pro education' | 'pro for workstations')
-                    case "$arch_win" in
-                    arm64) echo consumer ;;
-                    x64) echo business ;; # iso 更小
-                    esac
-                    ;;
-                # iot
-                'iot enterprise') echo 'iot enterprise' ;;
-                # iot ltsc
-                'iot enterprise ltsc 2019' | 'iot enterprise ltsc 2021') echo "$edition" ;;
-                # ltsc
-                'enterprise 2015 ltsb' | 'enterprise 2016 ltsb' | 'enterprise ltsc 2019') echo "$edition" ;;
-                'enterprise ltsc 2021')
-                    # arm64 的 enterprise ltsc 2021 要下载 iot enterprise ltsc 2021 iso
-                    case "$arch_win" in
-                    arm64) echo 'iot enterprise ltsc 2021' ;;
-                    x86 | x64) echo 'enterprise ltsc 2021' ;;
-                    esac
-                    ;;
-                esac
-                ;;
-            11)
-                # arm business iso 都没有 education, pro education, pro for workstations
-                # 即使它的名字包含 EDU
-                # SW_DVD9_Win_Pro_10_22H2.31_Arm64_English_Pro_Ent_EDU_N_MLF_X24-05074.ISO
-                # en-us_windows_11_business_editions_version_25h2_arm64_dvd_8afc9b39.iso
-                case "$edition" in
-                home | 'home single language') echo consumer ;;
-                pro | enterprise) echo business ;;
-                education | 'pro education' | 'pro for workstations')
-                    case "$arch_win" in
-                    arm64) echo consumer ;;
-                    x64) echo business ;; # iso 更小
-                    esac
-                    ;;
-                # iot
-                'iot enterprise' | 'iot enterprise subscription') echo 'iot enterprise' ;;
-                # iot ltsc
-                'iot enterprise ltsc 2024' | 'iot enterprise subscription ltsc 2024') echo 'iot enterprise ltsc 2024' ;;
-                # ltsc
-                'enterprise ltsc 2024')
-                    # arm64 的 enterprise ltsc 2024 要下载 iot enterprise ltsc 2024 iso
-                    case "$arch_win" in
-                    arm64) echo 'iot enterprise ltsc 2024' ;;
-                    x64) echo 'enterprise ltsc 2024' ;;
-                    esac
-                    ;;
-                esac
-                ;;
-            esac
-        fi
-    }
-
-    get_label_vlsc() {
-        case "$version" in
-        10 | 11)
-            case "$edition" in
-            pro | education | enterprise | 'pro education' | 'pro for workstations') echo pro ;;
-            esac
-            ;;
-        esac
-    }
-
-    # msdl 没有每月发布的 iso
-    # msdl 只有 consumer 版本，因此里面的 pro 版本不是 vl 版
-    # 8.1 没有每月发布的 iso，因此优先从 msdl 下载
-    # win10 22h2 arm 有每月发布的 iso，因此不从 msdl 下载
-    # win10/11 ltsc 没有每月发布的 iso，但是 msdl 没有 ltsc 版本
-    get_label_msdl() {
-        case "$version" in
-        8.1)
-            case "$edition" in
-            '' | pro) echo _ ;;
-            esac
-            ;;
-        esac
-    }
-
-    get_page() {
-        if [ "$arch_win" = arm64 ]; then
-            echo arm
-        elif is_ltsc; then
-            echo ltsc
-        elif [ "$server" = 'server' ]; then
-            echo server
-        else
-            case "$version" in
-            vista | 7 | 8 | 8.1 | 10 | 11)
-                echo "$version"
-                ;;
-            esac
-        fi
-    }
-
-    is_ltsc() {
-        grep -Ewq 'ltsb|ltsc' <<<"$edition"
-    }
-
-    # 部分 bash 不支持 $() 里面嵌套case，所以定义成函数
-    label_msdn=$(get_label_msdn)
-    label_msdl=$(get_label_msdl)
-    label_vlsc=$(get_label_vlsc)
-    page=$(get_page)
-
-    if [ "$page" = vista ]; then
-        page_url=https://massgrave.dev/windows_vista__links
-    elif [ "$page" = server ]; then
-        page_url=https://massgrave.dev/windows-server-links
-    else
-        page_url=https://massgrave.dev/windows_${page}_links
-    fi
-
-    info "Find windows iso"
-    echo "Version:    $version"
-    echo "Edition:    $edition"
-    echo "Label msdn: $label_msdn"
-    echo "Label msdl: $label_msdl"
-    echo "Label vlsc: $label_vlsc"
-    echo "List:       $page_url"
-    echo
-
-    # 先判断是否能自动查找该版本
-    # 再判断是否支持 arm
-    # 这样可以在输入错误 Edition 时例如 windows 11 enterprise ltsc 2021
-    # 显示名称错误，而不是显示该版本不支持 arm
-
-    if [ -z "$page" ] || { [ -z "$label_msdn" ] && [ -z "$label_msdl" ] && [ -z "$label_vlsc" ]; }; then
-        error_and_exit "Not support find this iso. Check if --image-name is wrong. Or set --iso manually."
-    fi
-
-    if [ "$basearch" = aarch64 ] && ! is_have_arm_version; then
-        error_and_exit "No ARM iso for this Windows Version or Edition."
-    fi
-
-    if [ -n "$label_msdl" ]; then
-        iso=$(curl -L "$page_url" | grep -ioP 'https://[^ ]+?#[0-9]+' | head -1 | grep .)
-    else
-        curl -L "$page_url" | grep -ioP 'https://[^ ]+?.(iso|img)' >$tmp/win.list
-
-        # 如果不是 ltsc ，应该先去除 ltsc 链接，否则最终链接有 ltsc 的
-        # 例如查找 windows 10 iot enterprise，会得到
-        # en-us_windows_10_iot_enterprise_ltsc_2021_arm64_dvd_e8d4fc46.iso
-        # en-us_windows_10_iot_enterprise_version_22h2_arm64_dvd_39566b6b.iso
-        # sed -Ei 和 sed -iE 是不同的
-        if is_ltsc; then
-            sed -Ei '/ltsc|ltsb/!d' $tmp/win.list
-        else
-            sed -Ei '/ltsc|ltsb/d' $tmp/win.list
-        fi
-
-        get_windows_iso_link_inner
-    fi
-}
-
-get_shortest_line() {
-    # awk '{print length($0), $0}' | sort -n | head -1 | awk '{print $2}'
-    awk '(NR == 1 || length($0) < length(shortest)) { shortest = $0 } END { print shortest }'
-}
-
-get_windows_iso_link_inner() {
-    regexs=()
-
-    # msdn
-    if [ -n "$label_msdn" ]; then
-        if [ "$label_msdn" = _ ]; then
-            label_msdn=
-        fi
-        for lang in $langs; do
-            regex=
-            for i in ${lang} windows ${server} ${version} ${label_msdn}; do
-                if [ -n "$i" ]; then
-                    regex+="${i}_"
-                fi
-            done
-            regex+=".*${arch_win}.*.(iso|img)"
-            regexs+=("$regex")
-        done
-    fi
-
-    # vlsc
-    if [ -n "$label_vlsc" ]; then
-        regex="sw_dvd[59]_win_${label_vlsc}_${version}.*${arch_win}_${full_lang}.*.(iso|img)"
-        regexs+=("$regex")
-    fi
-
-    # 查找
-    for regex in "${regexs[@]}"; do
-        regex=${regex// /_}
-
-        echo "looking for: $regex" >&2
-        if iso=$(grep -Ei "/$regex" "$tmp/win.list" | get_shortest_line | grep .); then
-            return
-        fi
-    done
-
-    error_and_exit "Could not find iso for this windows edition or language."
-}
-
 setos() {
     local step=$1
     local distro=$2
@@ -1420,74 +986,6 @@ setos() {
             # file=openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2
         fi
         eval ${step}_img=$mirror/$dir/$file
-    }
-
-    setos_windows() {
-        if [ -z "$iso" ]; then
-            # 查找时将 windows longhorn serverdatacenter 改成 windows server 2008 serverdatacenter
-            image_name=${image_name/windows longhorn server/windows server 2008 server}
-            echo "iso url is not set. Attempting to find it automatically."
-            find_windows_iso
-        fi
-
-        # 将上面的 windows server 2008 serverdatacenter 改回 windows longhorn serverdatacenter
-        # 也能纠正用户输入了 windows server 2008 serverdatacenter
-        # 注意 windows server 2008 r2 serverdatacenter 不用改
-        image_name=${image_name/windows server 2008 server/windows longhorn server}
-
-        if [[ "$iso" = magnet:* ]]; then
-            : # 不测试磁力链接
-        else
-            # 需要用户输入 massgrave.dev 直链
-            if grep -Eiq '\.massgrave\.dev/.*\.(iso|img)$' <<<"$iso" ||
-                grep -Eiq '\.gravesoft\.dev/#[0-9]+$' <<<"$iso"; then
-                info "Set Direct link"
-                # MobaXterm 不支持
-                # printf '\e]8;;http://example.com\e\\This is a link\e]8;;\e\\\n'
-
-                # MobaXterm 不显示为超链接
-                # info false "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
-                # info false "Please open $iso in browser to get the direct link and paste it here."
-
-                echo "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
-                echo "Please open $iso in browser to get the direct link and paste it here."
-                IFS= read -r -p "Direct Link: " iso
-                if [ -z "$iso" ]; then
-                    error_and_exit "ISO Link is empty."
-                fi
-            fi
-
-            # 测试是否是 iso
-            test_url "$iso" iso
-
-            # 判断 iso 架构是否兼容
-            # https://gitlab.com/libosinfo/osinfo-db/-/tree/main/data/os/microsoft.com?ref_type=heads
-            # uupdump linux 下合成的标签是 ARM64，windows下合成的标签是 A64
-            if file -b "$tmp/img-test" | grep -Eq '_(A64|ARM64)'; then
-                iso_arch=arm64
-            else
-                iso_arch=x86_or_x64
-            fi
-
-            if ! {
-                { [ "$basearch" = x86_64 ] && [ "$iso_arch" = x86_or_x64 ]; } ||
-                    { [ "$basearch" = aarch64 ] && [ "$iso_arch" = arm64 ]; }
-            }; then
-                warn "
-The current machine is $basearch, but it seems the ISO is for $iso_arch. Continue?
-当前机器是 $basearch，但 ISO 似乎是 $iso_arch。继续安装?"
-                read -r -p '[y/N]: '
-                if ! [[ "$REPLY" = [Yy] ]]; then
-                    exit
-                fi
-            fi
-        fi
-
-        [ -n "$boot_wim" ] && test_url "$boot_wim" 'wim'
-
-        eval "${step}_iso='$iso'"
-        eval "${step}_boot_wim='$boot_wim'"
-        eval "${step}_image_name='$image_name'"
     }
 
     # shellcheck disable=SC2154
@@ -1826,7 +1324,6 @@ verify_os_name() {
         'arch' \
         'gentoo' \
         'aosc' \
-        'windows' \
         'dd'; do
         read -r ds vers <<<"$os"
         vers_=${vers//\./\\\.}
@@ -1849,11 +1346,6 @@ verify_os_args() {
     case "$distro" in
     dd) [ -n "$img" ] || error_and_exit "dd need --img" ;;
     redhat) [ -n "$img" ] || error_and_exit "redhat need --img" ;;
-    windows) [ -n "$image_name" ] || error_and_exit "Install Windows need --image-name." ;;
-    esac
-
-    case "$distro" in
-    windows) [ -z "$ssh_keys" ] || error_and_exit "not support ssh key for $distro" ;;
     esac
 }
 
@@ -2087,7 +1579,7 @@ check_ram() {
     ram_standard=$(
         case "$distro" in
         alpine | debian | kali | dd) echo 256 ;;
-        arch | gentoo | aosc | nixos | windows) echo 512 ;;
+        arch | gentoo | aosc | nixos) echo 512 ;;
         redhat | centos | almalinux | rocky | fedora | oracle | ubuntu | anolis | opencloudos | openeuler) echo 1024 ;;
         opensuse | fnos) echo -1 ;; # 没有安装模式
         esac
@@ -2104,7 +1596,7 @@ check_ram() {
     has_cloud_image=$(
         case "$distro" in
         redhat | centos | almalinux | rocky | oracle | fedora | debian | ubuntu | opensuse | anolis | openeuler) echo true ;;
-        alpine | dd | arch | gentoo | nixos | kali | windows) echo false ;;
+        alpine | dd | arch | gentoo | nixos | kali) echo false ;;
         esac
     )
 
@@ -2327,19 +1819,6 @@ save_password() {
             crypted=$(printf '%s' "$password" | mkpasswd -m yescrypt --stdin)
             echo "$crypted" >"$dir/password-linux-yescrypt"
         fi
-    fi
-
-    # windows
-    if [ "$distro" = windows ] || [ "$distro" = dd ]; then
-        install_pkg iconv
-
-        # 要分两行写，因为 echo "$(xxx)" 返回值始终为 0，出错也不会中断脚本
-        # grep . 为了保证脚本没有出错
-        base64=$(printf '%s' "${password}Password" | iconv -f UTF-8 -t UTF-16LE | base64 -w 0 | grep .)
-        echo "$base64" >"$dir/password-windows-user-base64"
-
-        base64=$(printf '%s' "${password}AdministratorPassword" | iconv -f UTF-8 -t UTF-16LE | base64 -w 0 | grep .)
-        echo "$base64" >"$dir/password-windows-administrator-base64"
     fi
 }
 
@@ -3603,15 +3082,6 @@ This script is outdated, please download reinstall.sh again.
         mod_initrd_$nextos_distro
     fi
 
-    # 添加自定义 windows 驱动
-    if [ "$distro" = windows ] && [ -n "$custom_infs" ]; then
-        # shellcheck disable=SC1090
-        . <(curl -L $confhome/windows-driver-utils.sh)
-        echo "$custom_infs" | while read -r inf; do
-            parse_inf_and_cp_driever "$inf" "$initrd_dir/custom_drivers" "$basearch_alt" true
-        done
-    fi
-
     # alpine live 不精简 initrd
     # 因为不知道用户想干什么，可能会用到精简的文件
     if is_virt && ! is_alpine_live; then
@@ -3756,23 +3226,15 @@ else
 fi
 
 long_opts=
-for o in ci installer debug minimal allow-ping help \
-    add-driver: \
+for o in ci installer debug minimal help \
     hold: sleep: \
-    iso: \
-    image-name: \
-    boot-wim: \
     img: \
-    lang: \
     passwd: password: \
     ssh-port: \
     ssh-key: public-key: \
-    rdp-port: \
     web-port: http-port: \
-    allow-ping: \
     commit: \
-    force-boot-mode: \
-    force-old-windows-setup:; do
+    force-boot-mode:; do
     [ -n "$long_opts" ] && long_opts+=,
     long_opts+=$o
 done
@@ -3813,10 +3275,6 @@ while true; do
         ;;
     --minimal)
         minimal=1
-        shift
-        ;;
-    --allow-ping)
-        allow_ping=1
         shift
         ;;
     --hold | --sleep)
@@ -3911,76 +3369,13 @@ EOF
         ssh_port=$2
         shift 2
         ;;
-    --rdp-port)
-        is_port_valid $2 || error_and_exit "Invalid $1 value: $2"
-        rdp_port=$2
-        shift 2
-        ;;
     --web-port | --http-port)
         is_port_valid $2 || error_and_exit "Invalid $1 value: $2"
         web_port=$2
         shift 2
         ;;
-    --add-driver)
-        [ -n "$2" ] || error_and_exit "Need value for $1"
-
-        # windows 路径转换
-        inf_or_dir=$(get_unix_path "$2")
-
-        # alpine busybox 不支持 readlink -m
-        # readlink -m /asfsafasfsaf/fasf
-        # 因此需要先判断路径是否存在
-
-        if ! [ -d "$inf_or_dir" ] &&
-            ! { [ -f "$inf_or_dir" ] && [[ "$inf_or_dir" =~ \.[iI][nN][fF]$ ]]; }; then
-            ssh_key_error_and_exit "Not a inf or dir: $2"
-        fi
-
-        # 转为绝对路径
-        inf_or_dir=$(readlink -f "$inf_or_dir")
-
-        info "finding inf in $inf_or_dir"
-        # find /tmp -type f -iname '*.inf' 只要 /tmp 存在就会返回 0
-        if infs=$(find "$inf_or_dir" -type f -iname '*.inf' | grep .); then
-            while IFS= read -r inf; do
-                # 防止重复添加
-                if ! grep -Fqx "$inf" <<<"$custom_infs"; then
-                    echo "inf found: $inf"
-                    # 一行一个 inf
-                    if [ -n "$custom_infs" ]; then
-                        custom_infs+=$'\n'
-                    fi
-                    custom_infs+=$inf
-                fi
-            done <<<"$infs"
-        else
-            error_and_exit "Can't find inf files in $2"
-        fi
-
-        shift 2
-        ;;
-    --force-old-windows-setup)
-        force_old_windows_setup=$2
-        shift 2
-        ;;
     --img)
         img=$2
-        shift 2
-        ;;
-    --iso)
-        iso=$2
-        shift 2
-        ;;
-    --boot-wim)
-        boot_wim=$2
-        shift 2
-        ;;
-    --image-name)
-        image_name=$(echo "$2" | to_lower)
-        shift 2
-        ;;
-    --lang)
-        lang=$(echo "$2" | to_lower)
         shift 2
         ;;
     --)
@@ -4022,7 +3417,7 @@ install_pkg curl grep
 # 强制忽略/强制添加 --ci 参数
 # debian 不强制忽略 ci 留作测试
 case "$distro" in
-dd | windows | kali | alpine | arch | gentoo | aosc | nixos | fnos)
+dd | kali | alpine | arch | gentoo | aosc | nixos | fnos)
     if is_use_cloud_image; then
         echo "ignored --ci"
         unset cloud_image
@@ -4091,6 +3486,7 @@ if false && [[ "$confhome" = http*://raw.githubusercontent.com/* ]]; then
 fi
 
 # 检测时区（基于 IP 地理位置）
+# shellcheck disable=SC2034
 timezone=$(detect_timezone)
 
 # 检查内存
@@ -4146,11 +3542,14 @@ if [ -f /etc/default/kexec ]; then
 fi
 
 # 下载 nextos 内核
-# shellcheck disable=SC2154
 info download vmlnuz and initrd
+# nextos_* 由 setos() 通过 eval 赋值，shellcheck 检测不到
+# shellcheck disable=SC2154
 curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
+# shellcheck disable=SC2154
 curl -Lo /reinstall-initrd $nextos_initrd
 if is_use_firmware; then
+    # shellcheck disable=SC2154
     curl -Lo /reinstall-firmware $nextos_firmware
 fi
 
@@ -4420,18 +3819,11 @@ fi
 info 'info'
 echo "$distro $releasever"
 
-case "$distro" in
-windows) username=administrator ;;
-dd | *) username=root ;;
-esac
-
-if [ -n "$username" ]; then
-    echo "Username: $username"
-    if [ -n "$ssh_keys" ]; then
-        echo "Public Key: $ssh_keys"
-    else
-        echo "Password: $password"
-    fi
+echo "Username: root"
+if [ -n "$ssh_keys" ]; then
+    echo "Public Key: $ssh_keys"
+else
+    echo "Password: $password"
 fi
 
 if is_alpine_live; then
