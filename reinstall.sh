@@ -51,37 +51,16 @@ trap_err() {
 }
 
 usage_and_exit() {
-    if is_in_windows; then
-        reinstall_____='.\reinstall.bat'
-    else
-        reinstall_____=' ./reinstall.sh'
-    fi
     cat <<EOF
-Usage: $reinstall_____ anolis      7|8|23
-                       opencloudos 8|9|23
-                       rocky       8|9|10
-                       oracle      8|9|10
-                       almalinux   8|9|10
-                       centos      9|10
-                       fnos        1
-                       nixos       25.11
-                       fedora      42|43
-                       debian      9|10|11|12|13
-                       alpine      3.20|3.21|3.22|3.23
-                       opensuse    15.6|16.0|tumbleweed
-                       openeuler   20.03|22.03|24.03|25.09
-                       ubuntu      16.04|18.04|20.04|22.04|24.04|25.10 [--minimal]
-                       kali
-                       arch
-                       gentoo
-                       aosc
-                       redhat      --img="http://access.cdn.redhat.com/xxx.qcow2"
-                       dd          --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
+Usage: ./reinstall.sh debian   11|12|13
+                      ubuntu   20.04|22.04|24.04|25.10 [--minimal]
+                      alpine   3.20|3.21|3.22|3.23
+                      dd       --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
 
-       Options:        [--password  PASSWORD]
-                       [--ssh-key   KEY]
-                       [--ssh-port  PORT]
-                       [--web-port  PORT]
+       Options:       [--password  PASSWORD]
+                      [--ssh-key   KEY]
+                      [--ssh-port  PORT]
+                      [--web-port  PORT]
 
 Manual: https://github.com/Lynthar/Reinstall
 
@@ -221,10 +200,6 @@ is_use_cloud_image() {
     [ -n "$cloud_image" ] && [ "$cloud_image" = 1 ]
 }
 
-is_force_use_installer() {
-    [ -n "$installer" ] && [ "$installer" = 1 ]
-}
-
 is_use_dd() {
     [ "$distro" = dd ]
 }
@@ -286,8 +261,8 @@ is_have_initrd() {
 }
 
 is_use_firmware() {
-    # shellcheck disable=SC2154
-    [ "$nextos_distro" = debian ] && ! is_virt
+    # 不再支持 debian-installer 模式，永远不需要 firmware
+    return 1
 }
 
 is_digit() {
@@ -736,256 +711,55 @@ setos() {
     }
 
     setos_debian() {
-        is_debian_elts() {
-            [ "$releasever" -le 10 ]
-        }
-
-        if [ "$releasever" -le 9 ] && [ "$basearch" = aarch64 ]; then
-            error_and_exit "Debian $releasever ELTS does not support aarch64."
-        fi
-
-        # 用此标记要是否 elts, 用于安装后修改 elts/etls-cn 源
-        # shellcheck disable=SC2034
-        is_debian_elts && elts=1 || elts=0
-
         case "$releasever" in
-        9) codename=stretch ;;
-        10) codename=buster ;;
         11) codename=bullseye ;;
         12) codename=bookworm ;;
         13) codename=trixie ;;
-        14) codename=forky ;;
-        15) codename=duke ;;
         esac
 
-        # udeb_mirror 安装时的源
-        # deb_mirror 安装后要修改成的源
-        if is_debian_elts; then
-            # 按道理不应该用官方源，但找不到其他源
-            udeb_mirror=deb.freexian.com/extended-lts
-            deb_mirror=deb.freexian.com/extended-lts
-            initrd_mirror=archive.debian.org/debian
-        else
-            mirror=deb.debian.org/debian # fastly
-            udeb_mirror=$mirror
-            deb_mirror=$mirror
-            initrd_mirror=$mirror
-        fi
-
-        # 云镜像和 firmware 下载源
         cdimage_mirror=https://cdimage.debian.org/images # 在瑞典，不是 cdn
-        # cloud.debian.org 同样在瑞典，不是 cdn
 
         is_virt && flavour=-cloud || flavour=
-        # debian 10 云内核 vultr efi vnc 没有显示
-        [ "$releasever" -le 10 ] && flavour=
         # 甲骨文 arm64 cloud 内核 vnc 没有显示
         [ "$basearch_alt" = arm64 ] && flavour=
 
-        if is_use_cloud_image; then
-            # cloud image
-            # https://salsa.debian.org/cloud-team/debian-cloud-images/-/tree/master/config_space/bookworm/files/etc/default/grub.d
-            # cloud 包括各种奇怪的优化，例如不显示 grub 菜单
-            # 因此使用 nocloud
-            if false; then
-                is_virt && ci_type=genericcloud || ci_type=generic
-            else
-                ci_type=nocloud
-            fi
-            eval ${step}_img=$cdimage_mirror/cloud/$codename/latest/debian-$releasever-$ci_type-$basearch_alt.qcow2
-        else
-            # 传统安装
-            initrd_dir=dists/$codename/main/installer-$basearch_alt/current/images/netboot/debian-installer/$basearch_alt
-
-            eval ${step}_udeb_mirror=$udeb_mirror
-            eval ${step}_vmlinuz=https://$initrd_mirror/$initrd_dir/linux
-            eval ${step}_initrd=https://$initrd_mirror/$initrd_dir/initrd.gz
-            eval ${step}_ks=$confhome/debian.cfg
-            eval ${step}_firmware=$cdimage_mirror/unofficial/non-free/firmware/$codename/current/firmware.cpio.gz
-            eval ${step}_codename=$codename
-        fi
-
-        # 官方安装和云镜像都会用到的
-        eval ${step}_deb_mirror=$deb_mirror
+        # cloud image
+        # https://salsa.debian.org/cloud-team/debian-cloud-images/-/tree/master/config_space/bookworm/files/etc/default/grub.d
+        # cloud 包括各种奇怪的优化，例如不显示 grub 菜单
+        # 因此使用 nocloud
+        ci_type=nocloud
+        eval ${step}_img=$cdimage_mirror/cloud/$codename/latest/debian-$releasever-$ci_type-$basearch_alt.qcow2
+        eval ${step}_deb_mirror=deb.debian.org/debian
         eval ${step}_kernel=linux-image$flavour-$basearch_alt
-    }
-
-    setos_kali() {
-        if is_use_cloud_image; then
-            :
-        else
-            # 传统安装
-            # http.kali.org 没有 ipv6 地址
-            # http.kali.org (geoip 重定向) 到 kali.download (cf)
-            hostname=kali.download
-            codename=kali-rolling
-            mirror=http://$hostname/kali/dists/$codename/main/installer-$basearch_alt/current/images/netboot/debian-installer/$basearch_alt
-
-            is_virt && flavour=-cloud || flavour=
-
-            eval ${step}_vmlinuz=$mirror/linux
-            eval ${step}_initrd=$mirror/initrd.gz
-            eval ${step}_ks=$confhome/debian.cfg
-            eval ${step}_deb_mirror=$hostname/kali
-            eval ${step}_udeb_mirror=$hostname/kali
-            eval ${step}_codename=$codename
-            eval ${step}_kernel=linux-image$flavour-$basearch_alt
-            # 缺少 firmware 下载
-        fi
     }
 
     setos_ubuntu() {
         case "$releasever" in
-        16.04) codename=xenial ;;
-        18.04) codename=bionic ;;
         20.04) codename=focal ;;
         22.04) codename=jammy ;;
         24.04) codename=noble ;;
         25.10) codename=questing ;; # non-lts
         esac
 
-        if is_use_cloud_image; then
-            # cloud image
-            ci_mirror=https://cloud-images.ubuntu.com
+        # cloud image
+        ci_mirror=https://cloud-images.ubuntu.com
 
-            # 以下版本有 minimal 镜像
-            # amd64 所有
-            # arm64 24.04 和以上
-            is_have_minimal_image() {
-                [ "$basearch_alt" = amd64 ] || [ "${releasever%.*}" -ge 24 ]
-            }
+        # 以下版本有 minimal 镜像
+        # amd64 所有
+        # arm64 24.04 和以上
+        is_have_minimal_image() {
+            [ "$basearch_alt" = amd64 ] || [ "${releasever%.*}" -ge 24 ]
+        }
 
-            get_suffix() {
-                if [ "$releasever" = 16.04 ]; then
-                    if is_efi; then
-                        echo -uefi1
-                    else
-                        echo -disk1
-                    fi
-                fi
-            }
-
-            if [ "$minimal" = 1 ]; then
-                if ! is_have_minimal_image; then
-                    error_and_exit "Minimal cloud image is not available for $releasever $basearch_alt."
-                fi
-                eval ${step}_img="$ci_mirror/minimal/releases/$codename/release/ubuntu-$releasever-minimal-cloudimg-$basearch_alt$(get_suffix).img"
-            else
-                # 用 codename 而不是 releasever，可减少一次跳转
-                eval ${step}_img="$ci_mirror/releases/$codename/release/ubuntu-$releasever-server-cloudimg-$basearch_alt$(get_suffix).img"
+        if [ "$minimal" = 1 ]; then
+            if ! is_have_minimal_image; then
+                error_and_exit "Minimal cloud image is not available for $releasever $basearch_alt."
             fi
+            eval ${step}_img="$ci_mirror/minimal/releases/$codename/release/ubuntu-$releasever-minimal-cloudimg-$basearch_alt.img"
         else
-            # 传统安装
-            case "$basearch" in
-            "x86_64") mirror=https://releases.ubuntu.com/$releasever ;;
-            "aarch64") mirror=https://cdimage.ubuntu.com/releases/$releasever/release ;;
-            esac
-
-            # iso
-            filename=$(curl -L $mirror/ | grep -oP "ubuntu-$releasever.*?-live-server-$basearch_alt.iso" |
-                sort -uV | tail -1 | grep .)
-            iso=$mirror/$filename
-            # 在 ubuntu 20.04 上，file 命令检测 ubuntu 22.04 iso 结果是 DOS/MBR boot sector
-            test_url "$iso" iso
-            eval ${step}_iso=$iso
-
-            # ks
-            eval ${step}_ks=$confhome/ubuntu.yaml
-            eval ${step}_minimal=$minimal
+            # 用 codename 而不是 releasever，可减少一次跳转
+            eval ${step}_img="$ci_mirror/releases/$codename/release/ubuntu-$releasever-server-cloudimg-$basearch_alt.img"
         fi
-    }
-
-    setos_arch() {
-        if [ "$basearch" = "x86_64" ]; then
-            mirror=https://geo.mirror.pkgbuild.com # geoip
-        else
-            # https 证书有问题
-            mirror=http://mirror.archlinuxarm.org # geoip
-        fi
-
-        if is_use_cloud_image; then
-            # cloud image
-            eval ${step}_img=$mirror/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-        else
-            # 传统安装
-            case "$basearch" in
-            x86_64) dir="core/os/$basearch" ;;
-            aarch64) dir="$basearch/core" ;;
-            esac
-            test_url $mirror/$dir/core.db gzip
-            eval ${step}_mirror=$mirror
-        fi
-    }
-
-    setos_nixos() {
-        mirror=https://nixos.org/channels
-
-        if is_use_cloud_image; then
-            :
-        else
-            # 传统安装
-            # 该服务器文件缓存 miss 时会响应 206 + Location 头
-            # 但 curl 这种情况不会重定向，所以添加 text 类型让它不要报错
-            test_url $mirror/nixos-$releasever/store-paths.xz 'xz text'
-            eval ${step}_mirror=$mirror
-        fi
-    }
-
-    setos_gentoo() {
-        mirror=https://distfiles.gentoo.org # cdn77
-
-        dir=releases/$basearch_alt/autobuilds
-
-        if is_use_cloud_image; then
-            # 使用 systemd 且没有 cloud-init
-            prefix=di-$basearch_alt-console
-            filename=$(curl -L $mirror/$dir/latest-$prefix.txt | grep '.qcow2' | awk '{print $1}' | grep .)
-            file=$mirror/$dir/$filename
-            test_url "$file" 'qemu'
-            eval ${step}_img=$file
-        else
-            prefix=stage3-$basearch_alt-systemd
-            filename=$(curl -L $mirror/$dir/latest-$prefix.txt | grep '.tar.xz' | awk '{print $1}' | grep .)
-            file=$mirror/$dir/$filename
-            test_url "$file" 'tar.xz'
-            eval ${step}_img=$file
-        fi
-    }
-
-    setos_opensuse() {
-        # https://download.opensuse.org/
-        # curl 会跳转到最近的镜像源，但可能会被镜像源 block
-        # aria2 会跳转使用 metalink
-
-        # https://downloadcontent.opensuse.org    # 德国
-        # https://downloadcontentcdn.opensuse.org # fastly cdn
-
-        mirror=https://downloadcontentcdn.opensuse.org
-
-        if [ "$releasever" = tumbleweed ]; then
-            # tumbleweed
-            if [ "$basearch" = aarch64 ]; then
-                dir=ports/aarch64/tumbleweed/appliances
-            else
-                dir=tumbleweed/appliances
-            fi
-            file=openSUSE-Tumbleweed-Minimal-VM.$basearch-Cloud.qcow2
-        else
-            # leap
-            dir=distribution/leap/$releasever/appliances
-            case "$releasever" in
-            15.6) file=openSUSE-Leap-$releasever-Minimal-VM.$basearch-Cloud.qcow2 ;;
-            16.0) file=Leap-$releasever-Minimal-VM.$basearch-Cloud.qcow2 ;;
-            # 16.0) file=Leap-$releasever-Minimal-VM.$basearch-kvm$(if [ "$basearch" = x86_64 ]; then echo '-and-xen'; fi).qcow2 ;;
-            esac
-
-            # https://src.opensuse.org/openSUSE/Leap-Images/src/branch/leap-16.0/kiwi-templates-Minimal/Minimal.kiwi
-            # https://build.opensuse.org/projects/Virtualization:Appliances:Images:openSUSE-Leap-15.6/packages/kiwi-templates-Minimal/files/Minimal.kiwi
-            # https://build.opensuse.org/projects/Virtualization:Appliances:Images:openSUSE-Tumbleweed/packages/kiwi-templates-Minimal/files/Minimal.kiwi
-            # 有专门的kvm镜像，openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2，里面没有cloud-init
-            # file=openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2
-        fi
-        eval ${step}_img=$mirror/$dir/$file
     }
 
     # shellcheck disable=SC2154
@@ -1030,266 +804,17 @@ Continue with DD?
         eval "${step}_img_type_warp='$img_type_warp'"
     }
 
-    setos_fnos() {
-        if [ "$basearch" = aarch64 ]; then
-            error_and_exit "FNOS not supports ARM."
-        fi
-
-        # 系统盘大小
-        min=8
-        default=8
-        while true; do
-            IFS= read -r -p "Type System Partition Size in GB. Minimal $min GB. [$default]: " input
-            input=${input:-$default}
-            if ! { is_digit "$input" && [ "$input" -ge "$min" ]; }; then
-                error "Invalid Size. Please Try again."
-            else
-                eval "${step}_fnos_part_size=${input}G"
-                break
-            fi
-        done
-
-        iso=$(curl -L https://fnnas.com/ | grep -o 'https://[^"]*\.iso' | head -1 | grep .)
-
-        # curl 7.82.0+
-        # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
-
-        iso=$(curl -L \
-            -d '{"url":"'$iso'"}' \
-            -H 'Content-Type: application/json' \
-            https://www.fnnas.com/api/download-sign |
-            grep -o 'https://[^"]*')
-
-        test_url "$iso" iso
-        eval "${step}_iso='$iso'"
-    }
-
-    setos_aosc() {
-        # 服务器在香港
-        mirror=https://releases.aosc.io
-
-        dir=os-$basearch_alt/base
-        file=$(curl -L $mirror/$dir/ | grep -oP 'aosc-os_base_.*?\.tar.xz' |
-            sort -uV | tail -1 | grep .)
-        img=$mirror/$dir/$file
-        test_url $img 'tar.xz'
-        eval ${step}_img=$img
-    }
-
-    setos_centos_almalinux_rocky_fedora() {
-        # el 10 需要 x86-64-v3，除了 almalinux
-        if [ "$basearch" = x86_64 ] &&
-            { [ "$distro" = centos ] || [ "$distro" = rocky ]; } &&
-            [ "$releasever" -ge 10 ]; then
-            assert_cpu_supports_x86_64_v3
-        fi
-
-        elarch=$basearch
-        if [ "$basearch" = x86_64 ] &&
-            [ "$distro" = almalinux ] && [ "$releasever" -ge 10 ] &&
-            ! is_cpu_supports_x86_64_v3; then
-            elarch=x86_64_v2
-        fi
-
-        if is_use_cloud_image; then
-            # ci
-            case $distro in
-            centos) ci_mirror="https://cloud.centos.org/centos" ;;
-            almalinux) ci_mirror="https://repo.almalinux.org/almalinux/$releasever/cloud/$elarch/images" ;;
-            rocky) ci_mirror="https://download.rockylinux.org/pub/rocky/$releasever/images/$elarch" ;;
-            fedora) ci_mirror="https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/$releasever/Cloud/$elarch/images" ;;
-            esac
-
-            case $distro in
-            centos)
-                case $releasever in
-                7)
-                    # CentOS-7-aarch64-GenericCloud.qcow2c 是旧版本
-                    ver=-2211
-                    ci_image=$ci_mirror/$releasever/images/CentOS-$releasever-$elarch-GenericCloud$ver.qcow2c
-                    ;;
-                *)
-                    # 有 bios 和 efi 镜像
-                    # https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2
-                    # https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-x86_64-10-latest.x86_64.qcow2
-                    [ "$elarch" = x86_64 ] &&
-                        ci_image=$ci_mirror/$releasever-stream/$elarch/images/CentOS-Stream-GenericCloud-x86_64-$releasever-latest.$elarch.qcow2 ||
-                        ci_image=$ci_mirror/$releasever-stream/$elarch/images/CentOS-Stream-GenericCloud-$releasever-latest.$elarch.qcow2
-                    ;;
-                esac
-                ;;
-            almalinux) ci_image=$ci_mirror/AlmaLinux-$releasever-GenericCloud-latest.$elarch.qcow2 ;;
-            rocky) ci_image=$ci_mirror/Rocky-$releasever-GenericCloud-Base.latest.$elarch.qcow2 ;;
-            fedora)
-                # 不加 / 会跳转到 https://dl.fedoraproject.org，纯 ipv6 无法访问
-                # curl -L -6 https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/42/Cloud/x86_64/images
-                # curl -L -6 https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/42/Cloud/x86_64/images/
-                filename=$(curl -L $ci_mirror/ | grep -oP "Fedora-Cloud-Base-Generic.*?.qcow2" |
-                    sort -uV | tail -1 | grep .)
-                ci_image=$ci_mirror/$filename
-                ;;
-            esac
-
-            eval ${step}_img=${ci_image}
-        else
-            # 传统安装
-            case $distro in
-            centos) mirrorlist="https://mirrors.centos.org/mirrorlist?repo=centos-baseos-$releasever-stream&arch=$elarch" ;;
-            almalinux) mirrorlist="https://mirrors.almalinux.org/mirrorlist/$releasever/baseos" ;;
-            rocky) mirrorlist="https://mirrors.rockylinux.org/mirrorlist?arch=$elarch&repo=BaseOS-$releasever" ;;
-            fedora) mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?arch=$elarch&repo=fedora-$releasever" ;;
-            esac
-
-            # rocky/centos9 需要删除第一行注释， almalinux 需要替换链接里面的 $basearch
-            for cur_mirror in $(curl -L $mirrorlist | sed "/^#/d" | sed "s,\$basearch,$elarch,"); do
-                host=$(get_host_by_url $cur_mirror)
-                if is_host_has_ipv4_and_ipv6 $host &&
-                    test_url_grace ${cur_mirror}images/pxeboot/vmlinuz; then
-                    mirror=$cur_mirror
-                    break
-                fi
-            done
-
-            if [ -z "$mirror" ]; then
-                error_and_exit "All mirror failed."
-            fi
-
-            eval "${step}_mirrorlist='${mirrorlist}'"
-
-            eval ${step}_ks=$confhome/redhat.cfg
-            eval ${step}_vmlinuz=${mirror}images/pxeboot/vmlinuz
-            eval ${step}_initrd=${mirror}images/pxeboot/initrd.img
-            eval ${step}_squashfs=${mirror}images/install.img
-            test_url ${mirror}images/install.img 'squashfs'
-        fi
-    }
-
-    setos_oracle() {
-        # el 10 需要 x86-64-v3
-        if [ "$basearch" = x86_64 ] && [ "$releasever" -ge 10 ]; then
-            assert_cpu_supports_x86_64_v3
-        fi
-
-        if is_use_cloud_image; then
-            # ci
-            install_pkg jq
-            mirror=https://yum.oracle.com
-
-            [ "$basearch" = aarch64 ] &&
-                template_prefix=ol${releasever}_${basearch}-cloud ||
-                template_prefix=ol${releasever}
-            curl -Lo $tmp/oracle.json $mirror/templates/OracleLinux/$template_prefix-template.json
-            dir=$(jq -r .base_url $tmp/oracle.json)
-            file=$(jq -r .kvm.image $tmp/oracle.json)
-            ci_image=$mirror$dir/$file
-
-            eval ${step}_img=${ci_image}
-        else
-            :
-        fi
-    }
-
-    setos_redhat() {
-        if is_use_cloud_image; then
-            # el 10 需要 x86-64-v3
-            if [ "$basearch" = x86_64 ] && [[ "$img" = *rhel-10* ]]; then
-                assert_cpu_supports_x86_64_v3
-            fi
-            eval "${step}_img='$img'"
-        else
-            :
-        fi
-    }
-
-    setos_opencloudos() {
-        # https://mirrors.opencloudos.tech 不支持 ipv6
-        # https://mirrors.cloud.tencent.com 没有 stream
-        if [ "$releasever" -ge 23 ]; then
-            mirror=https://mirrors.opencloudos.tech/opencloudos-stream/releases
-        else
-            mirror=https://mirrors.cloud.tencent.com/opencloudos
-        fi
-
-        if is_use_cloud_image; then
-            # ci
-            if [ "$releasever" -eq 9 ]; then
-                dir=$releasever/images/qcow2/$basearch
-            else
-                dir=$releasever/images/$basearch
-            fi
-
-            file=$(curl -L $mirror/$dir/ | grep -oP 'OpenCloudOS.*?\.qcow2' |
-                sort -uV | tail -1 | grep .)
-            eval ${step}_img=$mirror/$dir/$file
-        else
-            :
-        fi
-    }
-
-    setos_anolis() {
-        mirror=https://mirrors.openanolis.cn/anolis
-        if is_use_cloud_image; then
-            # ci
-            dir=$releasever/isos/GA/$basearch
-            [ "$releasever" -ge 23 ] &&
-                filename='AnolisOS.*?\.qcow2' ||
-                filename='AnolisOS.*?-ANCK\.qcow2'
-            file=$(curl -L $mirror/$dir/ | grep -oP "$filename" |
-                sort -uV | tail -1 | grep .)
-            eval ${step}_img=$mirror/$dir/$file
-        else
-            :
-        fi
-    }
-
-    setos_openeuler() {
-        mirror=https://repo.openeuler.org
-        if is_use_cloud_image; then
-            # ci
-            name=$(curl -L "$mirror/" | grep -oE "openEuler-$releasever(-LTS)?(-SP[0-9])?" |
-                sort -uV | tail -1 | grep .)
-            eval ${step}_img=$mirror/$name/virtual_machine_img/$basearch/$name-$basearch.qcow2.xz
-        else
-            :
-        fi
-    }
 
     eval ${step}_distro=$distro
     eval ${step}_releasever=$releasever
 
-    case "$distro" in
-    centos | almalinux | rocky | fedora) setos_centos_almalinux_rocky_fedora ;;
-    *) setos_$distro ;;
-    esac
-
-    # debian/kali <=256M 必须使用云内核，否则不够内存
-    if is_distro_like_debian && ! is_in_windows && [ "$ram_size" -le 256 ]; then
-        exit_if_cant_use_cloud_kernel
-    fi
+    setos_$distro
 
     # 集中测试云镜像格式
     if is_use_cloud_image && [ "$step" = finalos ]; then
         # shellcheck disable=SC2154
         test_url $finalos_img 'qemu qemu.gzip qemu.xz qemu.zstd raw.xz' finalos_img_type
     fi
-}
-
-is_distro_like_redhat() {
-    if [ -n "$1" ]; then
-        _distro=$1
-    else
-        _distro=$distro
-    fi
-    [ "$_distro" = redhat ] || [ "$_distro" = centos ] || [ "$_distro" = almalinux ] || [ "$_distro" = rocky ] || [ "$_distro" = fedora ] || [ "$_distro" = oracle ]
-}
-
-is_distro_like_debian() {
-    if [ -n "$1" ]; then
-        _distro=$1
-    else
-        _distro=$distro
-    fi
-    [ "$_distro" = debian ] || [ "$_distro" = kali ]
 }
 
 get_latest_distro_releasever() {
@@ -1303,27 +828,10 @@ verify_os_name() {
         usage_and_exit
     fi
 
-    # 不要删除 centos 7
     for os in \
-        'centos      7|9|10' \
-        'anolis      7|8|23' \
-        'opencloudos 8|9|23' \
-        'almalinux   8|9|10' \
-        'rocky       8|9|10' \
-        'oracle      8|9|10' \
-        'fnos        1' \
-        'fedora      42|43' \
-        'nixos       25.11' \
-        'debian      9|10|11|12|13' \
-        'opensuse    15.6|16.0|tumbleweed' \
-        'alpine      3.20|3.21|3.22|3.23' \
-        'openeuler   20.03|22.03|24.03|25.09' \
-        'ubuntu      16.04|18.04|20.04|22.04|24.04|25.10' \
-        'redhat' \
-        'kali' \
-        'arch' \
-        'gentoo' \
-        'aosc' \
+        'debian   11|12|13' \
+        'ubuntu   20.04|22.04|24.04|25.10' \
+        'alpine   3.20|3.21|3.22|3.23' \
         'dd'; do
         read -r ds vers <<<"$os"
         vers_=${vers//\./\\\.}
@@ -1345,7 +853,6 @@ verify_os_name() {
 verify_os_args() {
     case "$distro" in
     dd) [ -n "$img" ] || error_and_exit "dd need --img" ;;
-    redhat) [ -n "$img" ] || error_and_exit "redhat need --img" ;;
     esac
 }
 
@@ -2434,47 +1941,9 @@ get_entry_name() {
 
 # shellcheck disable=SC2154
 build_nextos_cmdline() {
-    if [ $nextos_distro = alpine ]; then
-        nextos_cmdline="alpine_repo=$nextos_repo modloop=$nextos_modloop"
-    elif is_distro_like_debian $nextos_distro; then
-        # 设置分辨率为800*600，防止分辨率过高 ssh screen attach 后无法全部显示
-        # iso 默认有 vga=788
-        # 如果要设置位数: video=800x600-16
-        nextos_cmdline="lowmem/low=1 auto=true priority=critical"
-        # nextos_cmdline+=" vga=788 video=800x600"
-        nextos_cmdline+=" url=$nextos_ks"
-        nextos_cmdline+=" mirror/http/hostname=${nextos_udeb_mirror%/*}"
-        nextos_cmdline+=" mirror/http/directory=/${nextos_udeb_mirror##*/}"
-        nextos_cmdline+=" base-installer/kernel/image=$nextos_kernel"
-        # elts 的 debian 不能用 security 源，否则安装过程会提示无法访问
-        if [ "$nextos_distro" = debian ] && is_debian_elts; then
-            nextos_cmdline+=" apt-setup/services-select="
-        fi
-        # kali 安装好后网卡是 eth0 这种格式，但安装时不是
-        if [ "$nextos_distro" = kali ]; then
-            nextos_cmdline+=" net.ifnames=0"
-            nextos_cmdline+=" simple-cdd/profiles=kali"
-        fi
-    elif is_distro_like_redhat $nextos_distro; then
-        # redhat
-        nextos_cmdline="root=live:$nextos_squashfs inst.ks=$nextos_ks"
-    fi
-
-    if is_distro_like_debian $nextos_distro; then
-        if [ "$basearch" = "x86_64" ]; then
-            # debian installer 好像第一个 tty 是主 tty
-            # 设置ttyS0,tty0,安装界面还是显示在ttyS0
-            :
-        else
-            # debian arm 在没有ttyAMA0的机器上（aws t4g），最少要设置一个tty才能启动
-            # 只设置tty0也行，但安装过程ttyS0没有显示
-            nextos_cmdline+=" $(echo_tmp_ttys)"
-        fi
-    else
-        nextos_cmdline+=" $(echo_tmp_ttys)"
-    fi
-    # nextos_cmdline+=" mem=256M"
-    # nextos_cmdline+=" lowmem=+1"
+    # nextos 只可能是 alpine（dd 模式不走这里）
+    nextos_cmdline="alpine_repo=$nextos_repo modloop=$nextos_modloop"
+    nextos_cmdline+=" $(echo_tmp_ttys)"
 }
 
 build_cmdline() {
@@ -2509,414 +1978,6 @@ mkdir_clear() {
     # umount_all "$dir"
     rm -rf "$dir"
     mkdir -p "$dir"
-}
-
-mod_initrd_debian_kali() {
-    # hack 1
-    # 允许设置 ipv4 onlink 网关
-    sed -Ei 's,&&( onlink=),||\1,' etc/udhcpc/default.script
-
-    # hack 2
-    # 强制使用 screen
-    # shellcheck disable=SC1003,SC2016
-    {
-        echo 'if false && : \' | insert_into_file lib/debian-installer.d/S70menu before 'if [ -x "$bterm" ]' -F
-        echo 'if true  || : \' | insert_into_file lib/debian-installer.d/S70menu before 'if [ -x "$screen_bin" -a' -F
-    }
-
-    # hack 3
-    # 修改 /var/lib/dpkg/info/netcfg.postinst 运行我们的脚本
-    netcfg() {
-        #!/bin/sh
-        # shellcheck source=/dev/null
-        . /usr/share/debconf/confmodule
-        db_progress START 0 5 debian-installer/netcfg/title
-
-        : get_ip_conf_cmd
-
-        # 运行 trans.sh，保存配置
-        db_progress INFO base-installer/progress/netcfg
-        # 添加 || exit ，可以在 debian installer 不兼容 /trans.sh 语法时强制报错
-        # exit 不带参数，返回值为 || 前面命令的返回值
-        sh /trans.sh || exit
-        db_progress STEP 1
-        db_progress STOP
-    }
-
-    postinst=var/lib/dpkg/info/netcfg.postinst
-    get_function_content netcfg >$postinst
-    get_ip_conf_cmd | insert_into_file $postinst after ": get_ip_conf_cmd"
-    # cat $postinst
-
-    # hack 4
-    # 修改 udeb 依赖
-
-    # 直接覆盖 net-retriever，方便调试
-    # curl -Lo /usr/lib/debian-installer/retriever/net-retriever $confhome/net-retriever
-
-    change_priority() {
-        while IFS= read -r line; do
-            if [[ "$line" = Package:* ]]; then
-                package=$(echo "$line" | cut -d' ' -f2-)
-
-            elif [[ "$line" = Priority:* ]]; then
-                # shellcheck disable=SC2154
-                if [ "$line" = "Priority: standard" ]; then
-                    for p in $disabled_list; do
-                        if [ "$package" = "$p" ]; then
-                            line="Priority: optional"
-                            break
-                        fi
-                    done
-                elif [[ "$package" = ata-modules* ]]; then
-                    # 改成强制安装
-                    # 因为是 pata-modules sata-modules scsi-modules 的依赖
-                    # 但我们没安装它们，也就不会自动安装 ata-modules
-                    line="Priority: standard"
-                fi
-            fi
-            echo "$line"
-        done
-    }
-
-    # shellcheck disable=SC2012
-    kver=$(ls -d lib/modules/* | awk -F/ '{print $NF}')
-
-    net_retriever=usr/lib/debian-installer/retriever/net-retriever
-    # shellcheck disable=SC2016
-    sed -i 's,>> "$1",| change_priority >> "$1",' $net_retriever
-    insert_into_file $net_retriever after '#!/bin/sh' <<EOF
-disabled_list="
-depthcharge-tools-installer
-kickseed-common
-nobootloader
-partman-btrfs
-partman-cros
-partman-iscsi
-partman-jfs
-partman-md
-partman-xfs
-rescue-check
-wpasupplicant-udeb
-lilo-installer
-systemd-boot-installer
-nic-modules-$kver-di
-nic-pcmcia-modules-$kver-di
-nic-usb-modules-$kver-di
-nic-wireless-modules-$kver-di
-nic-shared-modules-$kver-di
-pcmcia-modules-$kver-di
-pcmcia-storage-modules-$kver-di
-cdrom-core-modules-$kver-di
-firewire-core-modules-$kver-di
-usb-storage-modules-$kver-di
-isofs-modules-$kver-di
-jfs-modules-$kver-di
-xfs-modules-$kver-di
-loop-modules-$kver-di
-pata-modules-$kver-di
-sata-modules-$kver-di
-scsi-modules-$kver-di
-"
-
-$(get_function change_priority)
-EOF
-
-    # https://github.com/linuxhw/LsPCI?tab=readme-ov-file#storageata-pci
-    # https://debian.pkgs.org/12/debian-main-amd64/linux-image-6.1.0-18-cloud-amd64_6.1.76-1_amd64.deb.html
-    # https://deb.debian.org/debian/pool/main/l/linux-signed-amd64/
-    # https://deb.debian.org/debian/dists/bookworm/main/debian-installer/binary-all/Packages.xz
-    # https://deb.debian.org/debian/dists/bookworm/main/debian-installer/binary-amd64/Packages.xz
-    # 以下是 debian-installer 有的驱动，这些驱动云内核不一定都有，(+)表示云内核有
-    # scsi-core-modules 默认安装（不用修改），是 ata-modules 的依赖
-    #                   包含 sd_mod.ko(+) scsi_mod.ko(+) scsi_transport_fc.ko(+) scsi_transport_sas.ko(+) scsi_transport_spi.ko(+)
-    # ata-modules       默认可选（改成必装），是下方模块的依赖。只有 ata_generic.ko(+) 和 libata.ko(+) 两个驱动
-
-    # pata-modules      默认安装（改成可选），里面的驱动都是 pata_ 开头，但只有 pata_legacy.ko(+) 在云内核中
-    # sata-modules      默认安装（改成可选），里面的驱动大部分是 sata_ 开头的，其他重要的还有 ahci.ko libahci.ko ata_piix.ko(+)
-    #                   云内核没有 sata 模块，也没有内嵌，有一个 CONFIG_SATA_HOST=y，libata-$(CONFIG_SATA_HOST)	+= libata-sata.o
-    # scsi-modules      默认安装（改成可选），包含 nvme.ko(+) 和各种虚拟化驱动(+)
-
-    download_and_extract_deb() {
-        local type=$1
-        local package=$2
-        local extract_dir=$3
-
-        # shellcheck disable=SC2154
-        case "$type" in
-        deb)
-            local mirror=$nextos_deb_mirror
-            local url=http://$mirror/dists/$nextos_codename/main/binary-$basearch_alt/Packages.gz
-            ;;
-        udeb)
-            local mirror=$nextos_udeb_mirror
-            local url=http://$mirror/dists/$nextos_codename/main/debian-installer/binary-$basearch_alt/Packages.gz
-            ;;
-        esac
-
-        # 获取 deb/udeb 列表
-        deb_list=$tmp/${type}_list
-        if ! [ -f $deb_list ]; then
-            curl -L "$url" | zcat | grep 'Filename:' | awk '{print $2}' >$deb_list
-        fi
-
-        # 下载 deb/udeb
-        deb_path=$(grep -F "/${package}_" "$deb_list")
-        curl -Lo $tmp/tmp.deb http://$mirror/"$deb_path"
-
-        if false; then
-            # 使用 dpkg
-            # cygwin 没有 dpkg
-            install_pkg dpkg
-            dpkg -x $tmp/tmp.deb $extract_dir
-        else
-            # 使用 ar tar xz
-            # cygwin 需安装 binutils
-            # centos7 ar 不支持 --output
-            install_pkg ar tar xz
-            (cd $tmp && ar x $tmp/tmp.deb)
-            tar xf $tmp/data.tar.xz -C $extract_dir
-        fi
-    }
-
-    # 不用在 windows 判断是哪种硬盘控制器，因为 256M 运行 windows 只可能是 xp，而脚本本来就不支持 xp
-    # 在 debian installer 中判断能否用云内核
-    create_can_use_cloud_kernel_sh can_use_cloud_kernel.sh
-
-    # 下载 fix-eth-name 脚本
-    curl -LO "$confhome/fix-eth-name.sh"
-    curl -LO "$confhome/fix-eth-name.service"
-
-    # 有段时间 kali initrd 删除了原版 wget
-    # 但 initrd 的 busybox wget 又不支持 https
-    # 因此改成在这里下载
-    curl -LO "$confhome/get-xda.sh"
-    curl -LO "$confhome/ttys.sh"
-
-    # 可以节省一点内存？
-    echo 'export DEBCONF_DROP_TRANSLATIONS=1' |
-        insert_into_file lib/debian-installer/menu before 'exec debconf'
-
-    # 还原 kali netinst.iso 的 simple-cdd 机制
-    # 主要用于调用 kali.postinst 设置 zsh 为默认 shell
-    # 但 mini.iso 又没有这种机制
-    # https://gitlab.com/kalilinux/build-scripts/kali-live/-/raw/main/kali-config/common/includes.installer/kali-finish-install?ref_type=heads
-    # https://salsa.debian.org/debian/simple-cdd/-/blob/master/debian/14simple-cdd?ref_type=heads
-    # https://http.kali.org/pool/main/s/simple-cdd/simple-cdd-profiles_0.6.9_all.udeb
-    if [ "$distro" = kali ]; then
-        # 但我们没有使用 iso，因此没有 kali.postinst，需要另外下载
-        mkdir -p cdrom/simple-cdd
-        curl -Lo cdrom/simple-cdd/kali.postinst https://gitlab.com/kalilinux/build-scripts/kali-live/-/raw/main/kali-config/common/includes.installer/kali-finish-install?ref_type=heads
-        chmod a+x cdrom/simple-cdd/kali.postinst
-    fi
-
-    if [ "$distro" = debian ] && is_debian_elts; then
-        curl -Lo usr/share/keyrings/debian-archive-keyring.gpg https://deb.freexian.com/extended-lts/archive-key.gpg
-    fi
-
-    # 提前下载 sshd
-    # 以便在配置下载源之前就可以启动 sshd
-    mkdir_clear $tmp/sshd
-    download_and_extract_deb udeb openssh-server-udeb $tmp/sshd
-    cp -r $tmp/sshd/* .
-
-    # 提前下载 fdisk
-    # 因为 fdisk-udeb 包含 fdisk 和 sfdisk，提前下载可减少占用
-    mkdir_clear $tmp/fdisk
-    download_and_extract_deb udeb fdisk-udeb $tmp/fdisk
-    cp -f $tmp/fdisk/usr/sbin/fdisk usr/sbin/
-
-    # 下载 websocketd
-    # debian 11+ 才有 websocketd
-    if [ "$distro" = kali ] ||
-        { [ "$distro" = debian ] && [ "$releasever" -ge 11 ]; }; then
-        mkdir_clear $tmp/websocketd
-        download_and_extract_deb deb websocketd $tmp/websocketd
-        cp -f $tmp/websocketd/usr/bin/websocketd usr/bin/
-    fi
-
-    # >256M 或者当前系统是 windows
-    if [ $ram_size -gt 256 ] || is_in_windows; then
-        sed -i '/^pata-modules/d' $net_retriever
-        sed -i '/^sata-modules/d' $net_retriever
-        sed -i '/^scsi-modules/d' $net_retriever
-    else
-        # <=256M 极限优化
-        find_main_disk
-        extra_drivers=
-        for driver in $(get_disk_drivers $xda); do
-            echo "using driver: $driver"
-            case $driver in
-            nvme) extra_drivers+=" nvme nvme-core" ;;
-                # xen 的横杠特别不同
-            xen_blkfront) extra_drivers+=" xen-blkfront" ;;
-            xen_scsifront) extra_drivers+=" xen-scsifront" ;;
-            virtio_blk | virtio_scsi | hv_storvsc | vmw_pvscsi) extra_drivers+=" $driver" ;;
-            pata_legacy) sed -i '/^pata-modules/d' $net_retriever ;; # 属于 pata-modules
-            ata_piix) sed -i '/^sata-modules/d' $net_retriever ;;    # 属于 sata-modules
-            ata_generic) ;;                                          # 属于 ata-modules，不用处理，因为我们设置强制安装了 ata-modules
-            esac
-        done
-
-        # extra drivers
-        # xen 还需要以下两个？
-        # kernel/drivers/xen/xen-scsiback.ko
-        # kernel/drivers/block/xen-blkback/xen-blkback.ko
-        # 但反查也找不到 curl https://deb.debian.org/debian/dists/bookworm/main/Contents-udeb-amd64.gz | zcat | grep xen
-        if [ -n "$extra_drivers" ]; then
-            mkdir_clear $tmp/scsi
-            download_and_extract_deb udeb scsi-modules-$kver-di $tmp/scsi
-            relative_drivers_dir=lib/modules/$kver/kernel/drivers
-
-            udeb_drivers_dir=$tmp/scsi/$relative_drivers_dir
-            dist_drivers_dir=$initrd_dir/$relative_drivers_dir
-            (
-                cd $udeb_drivers_dir
-                for driver in $extra_drivers; do
-                    # debian 模块没有压缩
-                    # kali 模块有压缩
-                    # 因此要有 *
-                    if ! find $dist_drivers_dir -name "$driver.ko*" | grep -q .; then
-                        echo "adding driver: $driver"
-                        file=$(find . -name "$driver.ko*" | grep .)
-                        cp -fv --parents "$file" "$dist_drivers_dir"
-                    fi
-                done
-            )
-        fi
-    fi
-
-    # amd64)
-    # 	level1=737 # MT=754108, qemu: -m 780
-    # 	level2=424 # MT=433340, qemu: -m 460
-    # 	min=316    # MT=322748, qemu: -m 350
-
-    # 将 use_level 2 9 修改为 use_level 1
-    # x86 use_level 2 会出现 No root file system is defined.
-    # arm 即使 use_level 1 也会出现 No root file system is defined.
-    sed -i 's/use_level=[29]/use_level=1/' lib/debian-installer-startup.d/S15lowmem
-
-    # hack 3
-    # 修改 trans.sh
-    # 1. 直接调用 create_ifupdown_config
-    # shellcheck disable=SC2154
-    insert_into_file $initrd_dir/trans.sh after '^: main' <<EOF
-        distro=$nextos_distro
-        releasever=$nextos_releasever
-        create_ifupdown_config /etc/network/interfaces
-        exit
-EOF
-    # 2. 删除 debian busybox 无法识别的语法
-    # 3. 删除 apk 语句
-    # 4. debian 11/12 initrd 无法识别 > >
-    # 5. debian 11/12 initrd 无法识别 < <
-    # 6. debian 11 initrd 无法识别 set -E
-    # 7. debian 11 initrd 无法识别 trap ERR
-    # 8. debian 9 initrd 无法识别 ${string//find/replace}
-    # 9. debian 12 initrd 无法识别 . <(
-    # 删除或注释，可能会导致空方法而报错，因此改为替换成'\n: #'
-    replace='\n: #'
-    sed -Ei \
-        -e "s/> >/$replace/" \
-        -e "s/< </$replace/" \
-        -e "s/\. <\(/$replace/" \
-        -e "s/^[[:space:]]*apk[[:space:]]/$replace/" \
-        -e "s/^[[:space:]]*trap[[:space:]]/$replace/" \
-        -e "s/\\$\{.*\/\/.*\/.*\}/$replace/" \
-        -e "/^[[:space:]]*set[[:space:]]/s/E//" \
-        $initrd_dir/trans.sh
-}
-
-get_disk_drivers() {
-    get_drivers "/sys/block/$1"
-}
-
-get_net_drivers() {
-    get_drivers "/sys/class/net/$1"
-}
-
-# 不用在 windows 判断是哪种硬盘/网络驱动，因为 256M 运行 windows 只可能是 xp，而脚本本来就不支持 xp
-# 而且安装过程也有二次判断
-get_drivers() {
-    # 有以下结果组合出现
-    # sd_mod
-    # virtio_blk
-    # virtio_scsi
-    # virtio_pci
-    # pcieport
-    # xen_blkfront
-    # ahci
-    # nvme
-    # mptspi
-    # mptsas
-    # vmw_pvscsi
-    (
-        cd "$(readlink -f $1)"
-        while ! [ "$(pwd)" = / ]; do
-            if [ -d driver ]; then
-                if [ -d driver/module ]; then
-                    # 显示全名，例如 xen_blkfront sd_mod
-                    # 但 ahci 没有这个文件，所以 else 不能省略
-                    basename "$(readlink -f driver/module)"
-                else
-                    # 不显示全名，例如 vbd sd
-                    basename "$(readlink -f driver)"
-                fi
-            fi
-            cd ..
-        done
-    )
-}
-
-exit_if_cant_use_cloud_kernel() {
-    find_main_disk
-    collect_netconf
-
-    # shellcheck disable=SC2154
-    if ! can_use_cloud_kernel "$xda" $ipv4_ethx $ipv6_ethx; then
-        error_and_exit "Can't use cloud kernel. And not enough RAM to run normal kernel."
-    fi
-}
-
-can_use_cloud_kernel() {
-    # initrd 下也要使用，不要用 <<<
-
-    # 有些虚拟机用了 ahci，但云内核没有 ahci 驱动
-    cloud_eth_modules='ena|gve|mana|virtio_net|xen_netfront|hv_netvsc|vmxnet3|mlx4_en|mlx4_core|mlx5_core|ixgbevf'
-    cloud_blk_modules='ata_generic|ata_piix|pata_legacy|nvme|virtio_blk|virtio_scsi|xen_blkfront|xen_scsifront|hv_storvsc|vmw_pvscsi'
-
-    # disk
-    drivers="$(get_disk_drivers $1)"
-    shift
-    for driver in $drivers; do
-        echo "using disk driver: $driver"
-    done
-    echo "$drivers" | grep -Ewq "$cloud_blk_modules" || return 1
-
-    # net
-    # v4 v6 eth 相同，只检查一次
-    if [ "$1" = "$2" ]; then
-        shift
-    fi
-    while [ $# -gt 0 ]; do
-        drivers="$(get_net_drivers $1)"
-        shift
-        for driver in $drivers; do
-            echo "using net driver: $driver"
-        done
-        echo "$drivers" | grep -Ewq "$cloud_eth_modules" || return 1
-    done
-}
-
-create_can_use_cloud_kernel_sh() {
-    cat <<EOF >$1
-        $(get_function get_drivers)
-        $(get_function get_net_drivers)
-        $(get_function get_disk_drivers)
-        $(get_function can_use_cloud_kernel)
-
-        can_use_cloud_kernel "\$@"
-EOF
 }
 
 get_ip_conf_cmd() {
@@ -3023,18 +2084,10 @@ EOF
             fi
         done
 EOF
-
-    # 判断云镜像 debain 能否用云内核
-    if is_distro_like_debian; then
-        create_can_use_cloud_kernel_sh can_use_cloud_kernel.sh
-        insert_into_file init before '^exec (/bin/busybox )?switch_root' <<EOF
-        cp /can_use_cloud_kernel.sh \$sysroot/
-        chmod a+x \$sysroot/can_use_cloud_kernel.sh
-EOF
-    fi
 }
 
 mod_initrd() {
+    # shellcheck disable=SC2154
     info "mod $nextos_distro initrd"
     install_pkg gzip cpio
 
@@ -3077,11 +2130,8 @@ This script is outdated, please download reinstall.sh again.
         save_password $initrd_dir/configs
     fi
 
-    if is_distro_like_debian $nextos_distro; then
-        mod_initrd_debian_kali
-    else
-        mod_initrd_$nextos_distro
-    fi
+    # nextos 只可能是 alpine
+    mod_initrd_alpine
 
     # alpine live 不精简 initrd
     # 因为不知道用户想干什么，可能会用到精简的文件
@@ -3227,7 +2277,7 @@ else
 fi
 
 long_opts=
-for o in ci installer debug minimal help \
+for o in ci debug minimal help \
     hold: sleep: \
     img: \
     passwd: password: \
@@ -3266,12 +2316,6 @@ while true; do
         ;;
     --ci)
         cloud_image=1
-        unset installer
-        shift
-        ;;
-    --installer)
-        installer=1
-        unset cloud_image
         shift
         ;;
     --minimal)
@@ -3415,24 +2459,17 @@ fi
 # 必备组件
 install_pkg curl grep
 
-# 强制忽略/强制添加 --ci 参数
-# debian 不强制忽略 ci 留作测试
+# debian / ubuntu 强制使用 cloud image (没有 installer 模式)
+# dd / alpine 忽略 --ci
 case "$distro" in
-dd | kali | alpine | arch | gentoo | aosc | nixos | fnos)
+dd | alpine)
     if is_use_cloud_image; then
         echo "ignored --ci"
         unset cloud_image
     fi
     ;;
-oracle | opensuse | anolis | opencloudos | openeuler)
+debian | ubuntu)
     cloud_image=1
-    ;;
-redhat | centos | almalinux | rocky | fedora | ubuntu)
-    if is_force_use_installer; then
-        unset cloud_image
-    else
-        cloud_image=1
-    fi
     ;;
 esac
 
@@ -3494,25 +2531,17 @@ timezone=$(detect_timezone)
 # 会用到 wmic，因此要在设置国内 confhome 后使用
 check_ram
 
-# 以下目标系统不需要两步安装
-# alpine
-# debian
-# el7 x86_64 >=1g
-# el7 aarch64 >=1.5g
-# el8/9/fedora 任何架构 >=2g
-if ! is_use_cloud_image && {
-    [ "$distro" = "alpine" ] || is_distro_like_debian ||
-        { is_distro_like_redhat && [ $releasever -eq 7 ] && [ $ram_size -ge 1024 ] && [ $basearch = "x86_64" ]; } ||
-        { is_distro_like_redhat && [ $releasever -eq 7 ] && [ $ram_size -ge 1536 ] && [ $basearch = "aarch64" ]; } ||
-        { is_distro_like_redhat && [ $releasever -ge 8 ] && [ $ram_size -ge 2048 ]; }
-}; then
+# alpine 直接进入安装；dd 和 debian / ubuntu cloud image 都走 alpine 中间系统
+case "$distro" in
+alpine)
     setos nextos $distro $releasever
-else
-    # alpine 作为中间系统时，使用最新版
+    ;;
+dd | debian | ubuntu)
     alpine_ver_for_trans=$(get_latest_distro_releasever alpine)
     setos finalos $distro $releasever
     setos nextos alpine $alpine_ver_for_trans
-fi
+    ;;
+esac
 
 # 删除之前的条目
 # bios 无论什么情况都用到 grub，所以不用处理
@@ -3554,10 +2583,8 @@ if is_use_firmware; then
     curl -Lo /reinstall-firmware $nextos_firmware
 fi
 
-# 修改 alpine debian kali initrd
-if [ "$nextos_distro" = alpine ] || is_distro_like_debian "$nextos_distro"; then
-    mod_initrd
-fi
+# 修改 alpine initrd（nextos 永远是 alpine，dd 模式不进入这里）
+mod_initrd
 
 # 将内核放到正确的位置
 if false && is_need_grub_extlinux; then
@@ -3832,16 +2859,6 @@ if is_alpine_live; then
 elif is_use_dd; then
     show_dd_password_tips
     echo 'Reboot to start DD.'
-elif [ "$distro" = fnos ]; then
-    echo "Special note for FNOS:"
-    echo "Reboot to start the installation."
-    echo "SSH login is disabled when installation completed."
-    echo "You need to config the account and password on http://SERVER_IP:5666 as soon as possible."
-    echo
-    echo "飞牛 OS 注意事项："
-    echo "重启后开始安装。"
-    echo "安装完成后不支持 SSH 登录。"
-    echo "你需要尽快在 http://SERVER_IP:5666 配置账号密码。"
 else
     echo "Reboot to start the installation."
 fi
