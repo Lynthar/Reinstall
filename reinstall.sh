@@ -60,7 +60,9 @@ Usage: ./reinstall.sh debian   11|12|13
        Options:       [--password PASSWORD | --password-stdin]
                       [--ssh-key KEY]
                       [--ssh-port PORT]
-                      [--web-port PORT]
+                      [--web-port PORT]          (default: 80)
+                      [--web-public]             (bind web log viewer to 0.0.0.0; default: 127.0.0.1)
+                      [--no-web]                 (disable web log viewer entirely)
                       [--timezone TZ]            (default: UTC)
                       [--detect-timezone]        (auto-detect via ipapi.co, leaks IP)
                       [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
@@ -1890,7 +1892,7 @@ build_extra_cmdline() {
     # https://answers.launchpad.net/ubuntu/+question/249456
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
     for key in confhome hold force_boot_mode cloud_image main_disk \
-        ssh_port web_port timezone; do
+        ssh_port web_port web_public no_web timezone; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -2269,7 +2271,7 @@ else
 fi
 
 long_opts=
-for o in ci debug minimal help detect-timezone password-stdin \
+for o in ci debug minimal help detect-timezone password-stdin web-public no-web \
     hold: sleep: \
     img: \
     passwd: password: \
@@ -2427,6 +2429,17 @@ EOF
         is_port_valid $2 || error_and_exit "Invalid $1 value: $2"
         web_port=$2
         shift 2
+        ;;
+    --web-public)
+        # 默认 web log viewer 只监听 127.0.0.1（需 SSH 端口转发查看）
+        # 此选项让它监听所有接口，公网可访问（无认证，建议配合防火墙）
+        web_public=1
+        shift
+        ;;
+    --no-web)
+        # 完全禁用 web log viewer
+        no_web=1
+        shift
         ;;
     --img)
         img=$2

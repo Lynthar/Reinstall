@@ -297,9 +297,19 @@ setup_websocketd() {
         web_port=80
     fi
 
+    # 默认绑定到 loopback，公网不可达；--web-public 才监听所有接口
+    # shellcheck disable=SC2154
+    if [ "$web_public" = 1 ]; then
+        web_addr=0.0.0.0
+        warn "Web log viewer listening on $web_addr:$web_port (PUBLIC, no auth)"
+    else
+        web_addr=127.0.0.1
+        info false "Web log viewer listening on $web_addr:$web_port (use SSH port forwarding to view)"
+    fi
+
     pkill websocketd || true
     # websocketd 遇到 \n 才推送，因此要转换 \r 为 \n
-    websocketd --port "$web_port" --loglevel=fatal --staticdir=/tmp \
+    websocketd --address "$web_addr" --port "$web_port" --loglevel=fatal --staticdir=/tmp \
         stdbuf -oL -eL sh -c "tail -fn+0 /reinstall.log | tr '\r' '\n' | grep -Fiv -e password -e token" &
 }
 
@@ -317,6 +327,11 @@ get_approximate_ram_size() {
 }
 
 setup_web_if_enough_ram() {
+    # shellcheck disable=SC2154
+    if [ "$no_web" = 1 ]; then
+        info false "Web log viewer disabled by --no-web"
+        return
+    fi
     total_ram=$(get_approximate_ram_size)
     # 512内存才安装
     if [ "$total_ram" -ge 400 ]; then
