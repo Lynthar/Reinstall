@@ -3362,34 +3362,25 @@ refind_main_disk() {
 }
 
 sync_time() {
-    if false; then
-        # arm要手动从硬件同步时间，避免访问https出错
-        # do 机器第二次运行会报错
-        hwclock -s || true
+    # 优先级:
+    # 1. NTP (pool.ntp.org)        — 专为时间同步设计，不依赖证书
+    # 2. HTTP Date header fallback — 当 NTP 端口被防火墙挡时用
+    #
+    # 旧版本默认走 HTTP + --no-check-certificate，相当于主动放弃 TLS 校验。
+    # NTP 走 UDP/123，跟 RTC 偏差再大也能 step 同步。
+
+    # NTP
+    # -d  Verbose / -n Foreground / -q Quit after sync / -p PEER
+    if ntpd -d -n -q -p pool.ntp.org; then
+        return
     fi
 
-    # ntp 时间差太多会无法同步？
-    # http 时间可能不准确，毕竟不是专门的时间服务器
-    #      也有可能没有 date header?
-    method=http
-
-    case "$method" in
-    ntp)
-        ntp_server=pool.ntp.org
-        # -d[d]   Verbose
-        # -n      Run in foreground
-        # -q      Quit after clock is set
-        # -p      PEER
-        ntpd -d -n -q -p "$ntp_server"
-        ;;
-    http)
-        url="$(grep -m1 ^http /etc/apk/repositories)/$(uname -m)/APKINDEX.tar.gz"
-        # 可能有多行，取第一行
-        date_header=$(wget -S --no-check-certificate --spider "$url" 2>&1 | grep -m1 '^  Date:')
-        # gnu date 不支持 -D
-        busybox date -u -D "  Date: %a, %d %b %Y %H:%M:%S GMT" -s "$date_header"
-        ;;
-    esac
+    # HTTP Date 回退（不强制 https；alpine apk 仓库默认 http）
+    warn "NTP sync failed, falling back to HTTP Date header"
+    url="$(grep -m1 ^http /etc/apk/repositories)/$(uname -m)/APKINDEX.tar.gz"
+    date_header=$(wget -S --spider "$url" 2>&1 | grep -m1 '^  Date:')
+    # gnu date 不支持 -D
+    busybox date -u -D "  Date: %a, %d %b %Y %H:%M:%S GMT" -s "$date_header"
 
     # 重启时 alpine 会自动写入到硬件时钟，因此这里跳过
     # hwclock -w
