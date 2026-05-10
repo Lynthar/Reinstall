@@ -55,12 +55,15 @@ usage_and_exit() {
 Usage: ./reinstall.sh debian   11|12|13
                       ubuntu   20.04|22.04|24.04|25.10 [--minimal]
                       alpine   3.20|3.21|3.22|3.23
-                      dd       --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
+                      dd       --img="https://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
 
-       Options:       [--password  PASSWORD]
-                      [--ssh-key   KEY]
-                      [--ssh-port  PORT]
-                      [--web-port  PORT]
+       Options:       [--password PASSWORD | --password-stdin]
+                      [--ssh-key KEY]
+                      [--ssh-port PORT]
+                      [--web-port PORT]
+                      [--timezone TZ]            (default: UTC)
+                      [--detect-timezone]        (auto-detect via ipapi.co, leaks IP)
+                      [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
 
 Manual: https://github.com/Lynthar/Reinstall
 
@@ -157,34 +160,19 @@ mask2cidr() {
     echo $(($2 + (${#x} / 4)))
 }
 
-# 基于 IP 地理位置检测时区
-# 使用多个备用 API 确保可靠性
+# 基于 IP 地理位置检测时区（隐私权衡：会向 ipapi.co 暴露出口 IP）
+# 默认不调用，需用户通过 --detect-timezone 显式 opt-in
 detect_timezone() {
-    local tz=""
-
-    # 尝试 ipapi.co (免费，无需 API key)
+    local tz
+    # ipapi.co 提供 HTTPS、免费、不需 token，单 API 简化
+    tz=$(curl -sL --connect-timeout 5 "https://ipapi.co/timezone" 2>/dev/null |
+        grep -E '^[A-Za-z_]+/[A-Za-z_]+' || true)
     if [ -z "$tz" ]; then
-        tz=$(curl -sL --connect-timeout 5 "https://ipapi.co/timezone" 2>/dev/null | grep -E '^[A-Za-z_]+/[A-Za-z_]+' || true)
-    fi
-
-    # 尝试 ip-api.com (备用)
-    if [ -z "$tz" ]; then
-        tz=$(curl -sL --connect-timeout 5 "http://ip-api.com/line/?fields=timezone" 2>/dev/null | grep -E '^[A-Za-z_]+/[A-Za-z_]+' || true)
-    fi
-
-    # 尝试 worldtimeapi.org (备用)
-    if [ -z "$tz" ]; then
-        tz=$(curl -sL --connect-timeout 5 "http://worldtimeapi.org/api/ip" 2>/dev/null | grep -o '"timezone":"[^"]*"' | cut -d'"' -f4 || true)
-    fi
-
-    # 如果都失败，使用 UTC
-    if [ -z "$tz" ]; then
-        tz="UTC"
-        warn "Could not detect timezone, using UTC"
+        warn "Could not detect timezone via ipapi.co, using UTC"
+        tz=UTC
     else
         info false "Detected timezone: $tz"
     fi
-
     echo "$tz"
 }
 
@@ -1246,9 +1234,12 @@ prompt_password() {
     warn false "Leave blank to use a random password."
     warn false "不填写则使用随机密码"
     while true; do
-        IFS= read -r -p "Password: " password
+        # -s 隐藏输入，防止肩窥
+        IFS= read -r -s -p "Password: " password
+        echo >&2
         if [ -n "$password" ]; then
-            IFS= read -r -p "Retype password: " password_confirm
+            IFS= read -r -s -p "Retype password: " password_confirm
+            echo >&2
             if [ "$password" = "$password_confirm" ]; then
                 break
             else
@@ -1260,6 +1251,7 @@ prompt_password() {
             # 有的机器运行 centos 7 ，用 /dev/random 产生 16 位密码，开启了 rngd 也要 5 秒，关闭了 rngd 则长期阻塞
             chars=\''A-Za-z0-9~!@#$%^&*_=+`|(){}[]:;"<>,.?/-'
             password=$(tr -dc "$chars" </dev/urandom | head -c16)
+            warn false "Generated random password: $password"
             break
         fi
     done
@@ -1814,7 +1806,7 @@ install_grub_win() {
         if false; then
             # g2ldr.mbr
             host=deb.debian.org
-            curl -LO http://$host/debian/tools/win32-loader/stable/win32-loader.exe
+            curl -LO https://$host/debian/tools/win32-loader/stable/win32-loader.exe
             7z x win32-loader.exe 'g2ldr.mbr' -o$tmp/win32-loader -r -y -bso0
             find $tmp/win32-loader -name 'g2ldr.mbr' -exec cp {} /cygdrive/$c/ \;
 
@@ -2277,7 +2269,7 @@ else
 fi
 
 long_opts=
-for o in ci debug minimal help \
+for o in ci debug minimal help detect-timezone password-stdin \
     hold: sleep: \
     img: \
     passwd: password: \
@@ -2285,6 +2277,7 @@ for o in ci debug minimal help \
     ssh-key: public-key: \
     web-port: http-port: \
     commit: \
+    timezone: \
     force-boot-mode:; do
     [ -n "$long_opts" ] && long_opts+=,
     long_opts+=$o
@@ -2309,6 +2302,15 @@ while true; do
     --commit)
         commit=$2
         shift 2
+        ;;
+    --timezone)
+        [ -n "$2" ] || error_and_exit "Need value for $1"
+        timezone=$2
+        shift 2
+        ;;
+    --detect-timezone)
+        auto_detect_timezone=1
+        shift
         ;;
     -x | --debug)
         set -x
@@ -2338,8 +2340,15 @@ while true; do
         ;;
     --passwd | --password)
         [ -n "$2" ] || error_and_exit "Need value for $1"
+        # 警告：密码会出现在 ps 输出和 shell history 中，建议改用 --password-stdin
         password=$2
         shift 2
+        ;;
+    --password-stdin)
+        # 从 stdin 读密码，不暴露在 ps 输出
+        IFS= read -r password
+        [ -n "$password" ] || error_and_exit "Empty password from stdin"
+        shift
         ;;
     --ssh-key | --public-key)
         ssh_key_error_and_exit() {
@@ -2510,22 +2519,38 @@ arm* | aarch64)
 *) error_and_exit "Unsupported arch: $basearch" ;;
 esac
 
-# 未测试
-if false && [[ "$confhome" = http*://raw.githubusercontent.com/* ]]; then
-    repo=$(echo $confhome | cut -d/ -f4,5)
-    branch=$(echo $confhome | cut -d/ -f6)
-    # 避免脚本更新时，文件不同步造成错误
+# 供应链固定：把 confhome 从分支引用钉到具体 commit SHA
+# 1. 防止脚本运行期间上游被改动导致 trans.sh / helper 不同步
+# 2. 用户可用 --commit SHA 强制指定具体版本
+if [[ "$confhome" =~ ^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+$ ]]; then
+    repo=$(echo "$confhome" | cut -d/ -f4,5)
+    branch=$(echo "$confhome" | cut -d/ -f6)
+
     if [ -z "$commit" ]; then
-        commit=$(curl -L https://api.github.com/repos/$repo/git/refs/heads/$branch |
-            grep '"sha"' | grep -Eo '[0-9a-f]{40}')
+        commit=$(curl -L "https://api.github.com/repos/$repo/git/refs/heads/$branch" 2>/dev/null |
+            grep '"sha"' | grep -Eo '[0-9a-f]{40}' | head -1)
     fi
-    # shellcheck disable=SC2001
-    confhome=$(echo "$confhome" | sed "s/main$/$commit/")
+
+    if [ -n "$commit" ]; then
+        confhome="https://raw.githubusercontent.com/$repo/$commit"
+        info false "Pinned confhome to $confhome"
+    else
+        warn "Could not resolve commit SHA, falling back to branch $branch"
+    fi
 fi
 
-# 检测时区（基于 IP 地理位置）
+# 时区设置：
+#   --timezone TZ        显式指定（推荐）
+#   --detect-timezone    联网探测（会向 ipapi.co 暴露出口 IP）
+#   两者都未指定         默认 UTC
 # shellcheck disable=SC2034
-timezone=$(detect_timezone)
+if [ -z "$timezone" ]; then
+    if [ "$auto_detect_timezone" = 1 ]; then
+        timezone=$(detect_timezone)
+    else
+        timezone=UTC
+    fi
+fi
 
 # 检查内存
 # 会用到 wmic，因此要在设置国内 confhome 后使用

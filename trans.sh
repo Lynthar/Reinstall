@@ -746,10 +746,6 @@ is_have_rdnss() {
     [ -n "$rdnss" ]
 }
 
-is_elts() {
-    [ -n "$elts" ] && [ "$elts" = 1 ]
-}
-
 is_need_set_ssh_keys() {
     [ -s /configs/ssh_keys ]
 }
@@ -2418,27 +2414,6 @@ EOF
             comps=$(grep '^deb ' $os_dir/etc/apt/sources.list | head -1 | cut -d' ' -f4-)
         fi
 
-        # ELTS/CN 源处理
-        if is_elts; then
-            # ELTS
-            wget https://deb.freexian.com/extended-lts/archive-key.gpg \
-                -O $os_dir/etc/apt/trusted.gpg.d/freexian-archive-extended-lts.gpg
-
-            codename=$(grep '^VERSION_CODENAME=' $os_dir/etc/os-release | cut -d= -f2)
-            # shellcheck disable=SC2154
-            if [ -f $os_dir/etc/apt/sources.list.d/debian.sources ]; then
-                cat <<EOF >$os_dir/etc/apt/sources.list.d/debian.sources
-Types: deb
-URIs: http://$deb_mirror
-Suites: $codename
-Components: $comps
-Signed-By: /etc/apt/trusted.gpg.d/freexian-archive-extended-lts.gpg
-EOF
-            else
-                echo "deb http://$deb_mirror $codename $comps" >$os_dir/etc/apt/sources.list
-            fi
-        fi
-
         # 标记所有内核为自动安装
         pkgs=$(chroot $os_dir apt-mark showmanual linux-image* linux-headers*)
         chroot $os_dir apt-mark auto $pkgs
@@ -3195,11 +3170,6 @@ del_default_user() {
     done < <(grep -v nologin$ "$os_dir/etc/passwd" | cut -d: -f1 | grep -v root)
 }
 
-is_el7_family() {
-    is_have_cmd_on_disk "$1" yum &&
-        ! is_have_cmd_on_disk "$1" dnf
-}
-
 del_exist_sysconfig_NetworkManager_config() {
     os_dir=$1
 
@@ -3227,272 +3197,6 @@ EOF
 install_qcow_by_copy() {
     info "Install qcow2 by copy"
 
-    modify_el_ol() {
-        info "Modify el ol"
-        os_dir=/os
-
-        # resolv.conf
-        cp_resolv_conf /os
-
-        # 部分镜像有默认配置，例如 centos
-        del_exist_sysconfig_NetworkManager_config /os
-
-        # 删除镜像的默认账户，防止使用默认账户密码登录 ssh
-        del_default_user /os
-
-        # selinux kdump
-        disable_selinux /os
-        disable_kdump /os
-
-        # el7 删除 machine-id 后不会自动重建
-        clear_machine_id /os
-
-        # el7 forks 特殊处理
-        if is_el7_family /os; then
-            # centos 7 eol 换源
-            if [ -f /os/etc/yum.repos.d/CentOS-Base.repo ]; then
-                # 保持默认的 http 因为自带的 ssl 证书可能过期
-                mirror=vault.centos.org
-                sed -Ei -e 's,(mirrorlist=),#\1,' \
-                    -e "s,#(baseurl=http://)mirror.centos.org,\1$mirror," /os/etc/yum.repos.d/CentOS-Base.repo
-            fi
-
-            # el7 yum 可能会使用 ipv6，即使没有 ipv6 网络
-            if [ "$(cat /dev/netconf/*/ipv6_has_internet | sort -u)" = 0 ]; then
-                echo 'ip_resolve=4' >>/os/etc/yum.conf
-            fi
-
-            # el7 安装 NetworkManager
-            # anolis 7 镜像自带 NetworkManager
-            if ! [ -f /os/usr/lib/systemd/system/NetworkManager.service ]; then
-                chroot_dnf install NetworkManager
-            fi
-            # 服务不存在时会报错
-            chroot /os systemctl disable network 2>/dev/null || true
-            chroot /os systemctl enable NetworkManager
-        fi
-
-        # firmware + microcode
-        if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
-            chroot_dnf install $fw_pkgs
-        fi
-
-        # fstab 删除多余分区
-        # almalinux/rocky 镜像有 boot 分区
-        # oracle 镜像有 swap 分区
-        sed -i '/[[:space:]]\/boot[[:space:]]/d' /os/etc/fstab
-        sed -i '/[[:space:]]swap[[:space:]]/d' /os/etc/fstab
-
-        # os_part 变量:
-        # mapper/vg_main-lv_root
-        # mapper/opencloudos-root
-
-        # oracle/opencloudos 系统盘从 lvm 改成 uuid 挂载
-        sed -i "s,/dev/$os_part,UUID=$os_part_uuid," /os/etc/fstab
-        if ls /os/boot/loader/entries/*.conf 2>/dev/null; then
-            # options root=/dev/mapper/opencloudos-root ro console=ttyS0,115200n8 no_timer_check net.ifnames=0 crashkernel=1800M-64G:256M,64G-128G:512M,128G-486G:768M,486G-972G:1024M,972G-:2048M rd.lvm.lv=opencloudos/root rhgb quiet
-            sed -i "s,/dev/$os_part,UUID=$os_part_uuid," /os/boot/loader/entries/*.conf
-        fi
-
-        # oracle/opencloudos 移除 lvm cmdline
-        chroot /os grubby --update-kernel ALL --remove-args "resume rd.lvm.lv"
-        # el7 上面那条 grubby 命令不能设置 /etc/default/grub
-        sed -i 's/rd.lvm.lv=[^ "]*//g' /os/etc/default/grub
-
-        # fstab 添加 efi 分区
-        if is_efi; then
-            # centos/oracle 要创建efi条目
-            if ! grep /boot/efi /os/etc/fstab; then
-                efi_part_uuid=$(lsblk /dev/$xda*1 -no UUID)
-                echo "UUID=$efi_part_uuid /boot/efi vfat $efi_mount_opts 0 0" >>/os/etc/fstab
-            fi
-        else
-            # 删除 efi 条目
-            sed -i '/[[:space:]]\/boot\/efi[[:space:]]/d' /os/etc/fstab
-        fi
-
-        remove_grub_conflict_files() {
-            # bios 和 efi 转换前先删除
-
-            # bios转efi出错
-            # centos 和 oracle x86_64 镜像只有 bios 镜像，/boot/grub2/grubenv 是真身
-            # 安装grub-efi时，grubenv 会改成指向efi分区grubenv软连接
-            # 如果安装grub-efi前没有删除原来的grubenv，原来的grubenv将不变，新建的软连接将变成 grubenv.rpmnew
-            # 后续grubenv的改动无法同步到efi分区，会造成grub2-setdefault失效
-
-            # efi转bios出错
-            # 如果是指向efi目录的软连接（例如el8），先删除它，否则 grub2-install 会报错
-            rm -rf /os/boot/grub2/grubenv /os/boot/grub2/grub.cfg
-        }
-
-        # openeuler arm 镜像 grub.cfg 在 /os/grub.cfg，可能给外部的 grub 读取，我们用不到
-        # centos7 有 grub1 的配置
-        rm -rf /os/grub.cfg /os/boot/grub/grub.conf /os/boot/grub/menu.lst
-
-        # 安装引导
-        if is_efi; then
-            # 只有centos 和 oracle x86_64 镜像没有efi，其他系统镜像已经从efi分区复制了文件
-            # openeuler 自带 grub2-efi-ia32，此时安装 grub2-efi 提示已经安装了 grub2-efi-ia32，不会继续安装 grub2-efi-x64
-
-            # 假设极端情况，qcow2 制作时，安装 grub2-efi-x64 时没有挂载 efi 分区，那么 efi 文件会在系统分区下
-            # 但我们复制系统分区时挂载了 /boot/efi，因此 efi 文件会正确地复制到 efi 分区
-            # 因此无需判断 qcow2 的 efi 是否是独立分区
-
-            # rhel 镜像没有源，直接 yum install 安装可能会报错
-            # 因此如果已经安装了要用的包就不再运行 yum install
-            need_install=false
-            need_remove_grub_conflict_files=false
-
-            [ "$(uname -m)" = x86_64 ] && arch=x64 || arch=aa64
-            if ! chroot $os_dir rpm -qi grub2-efi-$arch; then
-                need_install=true
-                need_remove_grub_conflict_files=true
-            elif ! chroot $os_dir rpm -qi shim-$arch || ! chroot $os_dir rpm -qi efibootmgr; then
-                need_install=true
-            fi
-
-            if $need_install; then
-                if $need_remove_grub_conflict_files; then
-                    remove_grub_conflict_files
-                fi
-                chroot_dnf install efibootmgr grub2-efi-$arch shim-$arch
-            fi
-            # openeuler arm 25.09 云镜像里面的 grubaa64.efi 是用于 mbr 分区表，$root 是 hd0,msdos1
-            # 因此要重新下载 $root 是 hd0,gpt1 的 grubaa64.efi
-            if $need_reinstall_grub_efi; then
-                chroot_dnf reinstall grub2-efi-$arch
-            fi
-        else
-            # bios
-            remove_grub_conflict_files
-            chroot /os/ grub2-install /dev/$xda
-        fi
-
-        # blscfg 启动项
-        # rocky/almalinux镜像是独立的boot分区，但我们不是
-        # 因此要添加boot目录
-        if ls /os/boot/loader/entries/*.conf 2>/dev/null &&
-            ! grep -q 'initrd /boot/' /os/boot/loader/entries/*.conf; then
-
-            sed -i -E 's,((linux|initrd) /),\1boot/,g' /os/boot/loader/entries/*.conf
-        fi
-
-        # grub-efi-x64 包里面有 /etc/grub2-efi.cfg
-        # 指向 /boot/efi/EFI/xxx/grub.cfg 或 /boot/grub2/grub.cfg
-        # 指向哪里哪里就是 grub2-mkconfig 应该生成文件的位置
-        # grubby 也是靠 /etc/grub2-efi.cfg 定位 grub.cfg 的位置
-        # openeuler 24.03 x64 aa64 指向的文件不同
-        if is_efi; then
-            grub_o_cfg=$(chroot /os readlink -f /etc/grub2-efi.cfg)
-        else
-            grub_o_cfg=/boot/grub2/grub.cfg
-        fi
-
-        # efi 分区 grub.cfg
-        # https://github.com/rhinstaller/anaconda/blob/346b932a26a19b339e9073c049b08bdef7f166c3/pyanaconda/modules/storage/bootloader/efi.py#L198
-        # https://github.com/rhinstaller/anaconda/commit/15c3b2044367d375db6739e8b8f419ef3e17cae7
-        if is_efi && ! echo "$grub_o_cfg" | grep -q '/boot/efi/EFI'; then
-            # oracle linux 文件夹是 redhat
-            # shellcheck disable=SC2010
-            distro_efi=$(cd /os/boot/efi/EFI/ && ls -d -- * | grep -Eiv BOOT)
-            cat <<EOF >/os/boot/efi/EFI/$distro_efi/grub.cfg
-search --no-floppy --fs-uuid --set=dev $os_part_uuid
-set prefix=(\$dev)/boot/grub2
-export \$prefix
-configfile \$prefix/grub.cfg
-EOF
-        fi
-
-        # 主 grub.cfg
-        if ls /os/boot/loader/entries/*.conf >/dev/null 2>&1 &&
-            chroot /os/ grub2-mkconfig --help | grep -q update-bls-cmdline; then
-            chroot /os/ grub2-mkconfig -o "$grub_o_cfg" --update-bls-cmdline
-        else
-            chroot /os/ grub2-mkconfig -o "$grub_o_cfg"
-        fi
-
-        # 网络配置
-        # el7/8 sysconfig
-        # el9 network-manager
-        if [ -f $os_dir/etc/sysconfig/network-scripts/ifup-eth ]; then
-            # sysconfig
-            info 'sysconfig'
-
-            # anolis/openeuler/opencloudos 可能要安装 cloud-init
-            # opencloudos 无法使用 chroot $os_dir command -v xxx
-            # chroot: failed to run command ‘command’: No such file or directory
-            # 注意还要禁用 cloud-init 服务
-            if ! is_have_cmd_on_disk $os_dir cloud-init; then
-                chroot_dnf install cloud-init
-            fi
-
-            # cloud-init 路径
-            # /usr/lib/python2.7/site-packages/cloudinit/net/
-            # /usr/lib/python3/dist-packages/cloudinit/net/
-            # /usr/lib/python3.9/site-packages/cloudinit/net/
-
-            # el7 不认识 static6，但可改成 static，作用相同
-            recognize_static6=true
-            if ls $os_dir/usr/lib/python*/*-packages/cloudinit/net/sysconfig.py 2>/dev/null &&
-                ! grep -q static6 $os_dir/usr/lib/python*/*-packages/cloudinit/net/sysconfig.py; then
-                recognize_static6=false
-            fi
-
-            # cloud-init 20.1 才支持以下配置
-            # https://cloudinit.readthedocs.io/en/20.4/topics/network-config-format-v1.html#subnet-ip
-            # https://cloudinit.readthedocs.io/en/21.1/topics/network-config-format-v1.html#subnet-ip
-            # ipv6_dhcpv6-stateful: Configure this interface with dhcp6
-            # ipv6_dhcpv6-stateless: Configure this interface with SLAAC and DHCP
-            # ipv6_slaac: Configure address with SLAAC
-
-            # el7 最新 cloud-init 版本
-            # centos 7         19.4-7.0.5.el7_9.6  backport 了 ipv6_xxx
-            # openeuler 20.03  19.4-15.oe2003sp4   backport 了 ipv6_xxx
-            # anolis 7         19.1.17-1.0.1.an7   没有更新到 centos7 相同版本,也没 backport ipv6_xxx，坑
-
-            # 最好还修改 ifcfg-eth* 的 IPV6_AUTOCONF
-            # 但实测 anolis7 cloud-init dhcp6 不会生成 IPV6_AUTOCONF，因此暂时不管
-            # https://www.redhat.com/zh/blog/configuring-ipv6-rhel-7-8
-            recognize_ipv6_types=true
-            if ls -d $os_dir/usr/lib/python*/*-packages/cloudinit/net/ 2>/dev/null &&
-                ! grep -qr ipv6_slaac $os_dir/usr/lib/python*/*-packages/cloudinit/net/; then
-                recognize_ipv6_types=false
-            fi
-
-            # 生成 cloud-init 网络配置
-            create_cloud_init_network_config $os_dir/net.cfg "$recognize_static6" "$recognize_ipv6_types"
-
-            # 转换成目标系统的网络配置
-            chroot $os_dir cloud-init devel net-convert \
-                -p /net.cfg -k yaml -d out -D rhel -O sysconfig
-            cp $os_dir/out/etc/sysconfig/network-scripts/ifcfg-eth* $os_dir/etc/sysconfig/network-scripts/
-
-            # 清理
-            rm -rf $os_dir/net.cfg $os_dir/out
-
-            # 删除 # Created by cloud-init on instance boot automatically, do not edit.
-            # 修正网络配置问题并显示文件
-            sed -i -e '/^IPV[46]_FAILURE_FATAL=/d' -e '/^#/d' $os_dir/etc/sysconfig/network-scripts/ifcfg-*
-            for file in "$os_dir/etc/sysconfig/network-scripts/ifcfg-"*; do
-                if grep -q '^DHCPV6C=yes' "$file"; then
-                    sed -i '/^IPV6_AUTOCONF=no/d' "$file"
-                fi
-                cat -n "$file"
-            done
-        else
-            # Network Manager
-            info 'Network Manager'
-
-            create_cloud_init_network_config /net.cfg
-            create_network_manager_config /net.cfg "$os_dir"
-
-            # 清理
-            rm /net.cfg
-        fi
-
-        # 不删除可能网络管理器不会写入dns
-        rm_resolv_conf /os
-    }
 
     modify_ubuntu() {
         os_dir=/os
@@ -3720,8 +3424,10 @@ EOF
 
     # 检测分区表类型
     partition_table_format=$(get_partition_table_format /dev/nbd0)
+    # shellcheck disable=SC2034
     need_reinstall_grub_efi=false
     if is_efi && [ "$partition_table_format" = "msdos" ]; then
+        # shellcheck disable=SC2034
         need_reinstall_grub_efi=true
     fi
 
@@ -3882,10 +3588,7 @@ EOF
     # 挂载伪文件系统
     mount_pseudo_fs /os/
 
-    case "$distro" in
-    ubuntu) modify_ubuntu ;;
-    *) modify_el_ol ;;
-    esac
+    modify_ubuntu
 
     # 基本配置
     basic_init /os
