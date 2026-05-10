@@ -1133,154 +1133,6 @@ add_space() {
 }
 
 # 不够严谨，谨慎使用
-nix_replace() {
-    local key=$1
-    local value=$2
-    local type=$3
-    local file=$4
-    local key_ value_
-
-    key_=$(echo "$key" | sed 's \. \\\. g') # . 改成 \.
-
-    if [ "$type" = array ]; then
-        local value_="[ $value ]"
-    fi
-
-    sed -i "s/$key_ =.*/$key = $value_;/" "$file"
-}
-
-create_nixos_network_config() {
-    conf_file=$1
-    true >$conf_file
-
-    # 头部
-    cat <<EOF >>$conf_file
-networking = {
-  usePredictableInterfaceNames = false;
-EOF
-
-    for ethx in $(get_eths); do
-        # ipv4
-        if is_staticv4; then
-            get_netconf_to ipv4_addr
-            get_netconf_to ipv4_gateway
-            IFS=/ read -r address prefix < <(echo "$ipv4_addr")
-            cat <<EOF >>$conf_file
-  interfaces.$ethx.ipv4.addresses = [
-    {
-      address = "$address";
-      prefixLength = $prefix;
-    }
-  ];
-  defaultGateway = {
-    address = "$ipv4_gateway";
-    interface = "$ethx";
-  };
-EOF
-        fi
-
-        # ipv6
-        if is_staticv6; then
-            get_netconf_to ipv6_addr
-            get_netconf_to ipv6_gateway
-            IFS=/ read -r address prefix < <(echo "$ipv6_addr")
-            cat <<EOF >>$conf_file
-  interfaces.$ethx.ipv6.addresses = [
-    {
-      address = "$address";
-      prefixLength = $prefix;
-    }
-  ];
-  defaultGateway6 = {
-    address = "$ipv6_gateway";
-    interface = "$ethx";
-  };
-EOF
-        fi
-    done
-
-    # 全局 dns
-    need_set_dns=false
-    for ethx in $(get_eths); do
-        if is_staticv4 || is_staticv6 || is_need_manual_set_dnsv6; then
-            need_set_dns=true
-            break
-        fi
-    done
-
-    if $need_set_dns; then
-        cat <<EOF >>$conf_file
-  nameservers = [
-$(get_current_dns | quote_line | add_space 4)
-  ];
-EOF
-    fi
-
-    # 尾部
-    cat <<EOF >>$conf_file
-};
-EOF
-
-    # nixos 默认网络管理器是 dhcpcd
-    # 但配置静态 ip 时用的是脚本
-    # /nix/store/qcr1xxjdxcrnwqwrgysqpxx2aibp9fdl-unit-script-network-addresses-eth0-start/bin/network-addresses-eth0-start
-    # ...
-    # if out=$(ip addr replace "181.x.x.x/24" dev "eth0" 2>&1); then
-    #   echo "done"
-    # else
-    #   echo "'ip addr replace "181.x.x.x/24" dev "eth0"' failed: $out"
-    #   exit 1
-    # fi
-    # ...
-
-    # 禁用 ra/autoconf
-    local mode=1
-    for ethx in $(get_eths); do
-        if should_disable_accept_ra; then
-            case "$mode" in
-            1)
-                cat <<EOF >>$conf_file
-boot.kernel.sysctl."net.ipv6.conf.$ethx.accept_ra" = false;
-EOF
-                ;;
-            2)
-                # nixos 配置静态 ip 时用的是脚本
-                # 好像因此不起作用
-                cat <<EOF >>$conf_file
-networking.dhcpcd.extraConfig =
-  ''
-    interface $ethx
-      ipv6ra_noautoconf
-  '';
-EOF
-                ;;
-            3)
-                # 暂时没用到 networkd
-                cat <<EOF >>$conf_file
-systemd.network.networks.$ethx = {
-   matchConfig.Name = "$ethx";
-   networkConfig = {
-     IPv6AcceptRA = false;
-   };
- };
-EOF
-                ;;
-            esac
-        fi
-
-        if should_disable_autoconf; then
-            case "$mode" in
-            1)
-                cat <<EOF >>$conf_file
-boot.kernel.sysctl."net.ipv6.conf.$ethx.autoconf" = false;
-EOF
-                ;;
-            2) ;;
-            3) ;;
-            esac
-        fi
-    done
-}
 
 install_alpine() {
     info "install alpine"
@@ -2200,23 +2052,6 @@ get_ucode_firmware_pkgs() {
     esac
 }
 
-chroot_systemctl_disable() {
-    os_dir=$1
-    shift
-
-    for unit in "$@"; do
-        # 如果传进来的是x(没有.) 则改成 x.service
-        if ! [[ "$unit" = "*.*" ]]; then
-            unit=$i.service
-        fi
-
-        # debian 10 返回值始终是 0
-        if ! chroot $os_dir systemctl list-unit-files "$unit" 2>&1 | grep -Eq '^0 unit'; then
-            chroot $os_dir systemctl disable "$unit"
-        fi
-    done
-}
-
 remove_cloud_init() {
     os_dir=$1
 
@@ -2263,24 +2098,6 @@ remove_cloud_init() {
             break
         fi
     done
-}
-
-disable_jeos_firstboot() {
-    os_dir=$1
-    info "Disable JeOS Firstboot"
-
-    # 两种方法都可以
-    # https://github.com/openSUSE/jeos-firstboot?tab=readme-ov-file#usage
-
-    rm -rf $os_dir/var/lib/YaST2/reconfig_system
-
-    for name in jeos-firstboot jeos-firstboot-snapshot; do
-        # 服务不存在时会报错
-        chroot $os_dir systemctl disable "$name.service" 2>/dev/null || true
-    done
-
-    # 可选
-    # chroot $os_dir zypper remove -y -u jeos-firstboot
 }
 
 create_network_manager_config() {
@@ -2331,71 +2148,9 @@ modify_linux() {
         fi
     }
 
-    # 修复 onlink 网关
-    add_onlink_script_if_need() {
-        for ethx in $(get_eths); do
-            if is_staticv4 || is_staticv6; then
-                fix_sh=cloud-init-fix-onlink.sh
-                download "$confhome/$fix_sh" "$os_dir/$fix_sh"
-                insert_into_file "$ci_file" after '^runcmd:' <<EOF
-  - bash "/$fix_sh" && rm -f "/$fix_sh"
-EOF
-                break
-            fi
-        done
-    }
-
-    # 部分镜像有默认配置，例如 centos
-    del_exist_sysconfig_NetworkManager_config $os_dir
-
-    # 仅 fedora (el/ol/国产fork 用的是复制文件方法)
-    # 1. 禁用 selinux kdump
-    # 2. 添加微码+固件
-    if [ -f $os_dir/etc/redhat-release ]; then
-        # 防止删除 cloud-init / 安装 firmware 时不够内存
-        create_swap_if_ram_less_than 2048 $os_dir/swapfile
-
-        find_and_mount /boot
-        find_and_mount /boot/efi
-        mount_pseudo_fs $os_dir
-        cp_resolv_conf $os_dir
-
-        # 可以直接用 alpine 的 cloud-init 生成 Network Manager 配置
-        create_cloud_init_network_config /net.cfg
-        create_network_manager_config /net.cfg "$os_dir"
-        rm /net.cfg
-
-        # TODO: fedora 43 eol 后删除
-        # 删除 cloud-init 会删除依赖包 netcat
-        # 但是删除 netcat 时会报错
-        # 因此保留 netcat 包
-        # >>> Running %preun scriptlet: netcat-0:1.229-3.fc43.x86_64
-        # >>> Error in %preun scriptlet: netcat-0:1.229-3.fc43.x86_64
-        # >>> Scriptlet output:
-        # >>> failed to create admindir: No such file or directory
-        # >>> [RPM] %preun(netcat-1.229-3.fc43.x86_64) scriptlet failed, exit status 2
-        # >>> [RPM] netcat-1.229-3.fc43.x86_64: erase failed
-        if [ "$distro" = fedora ] && [ "$releasever" = 43 ]; then
-            chroot $os_dir dnf mark user netcat -y
-        fi
-        remove_cloud_init $os_dir
-
-        disable_selinux $os_dir
-        disable_kdump $os_dir
-
-        if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
-            is_have_cmd_on_disk $os_dir dnf && mgr=dnf || mgr=yum
-            chroot $os_dir $mgr install -y $fw_pkgs
-        fi
-
-        restore_resolv_conf $os_dir
-    fi
-
     # debian
-    # 1. EOL 换源
-    # 2. 修复网络问题
-    # 3. 添加微码+固件
-    # 注意 ubuntu 也有 /etc/debian_version
+    # 1. 修复网络问题
+    # 2. 添加微码+固件
     if [ "$distro" = debian ]; then
         # 修复 onlink 网关
         # add_onlink_script_if_need
@@ -2524,186 +2279,10 @@ EOF
         keep_now_resolv_conf $os_dir
     fi
 
-    # opensuse
-    # 1. kernel-default-base 缺少 nvme gve mlx5 mana 驱动，换成 kernel-default
-    # 2. 添加微码+固件
-    # https://documentation.suse.com/smart/virtualization-cloud/html/minimal-vm/index.html
-    if grep -q opensuse $os_dir/etc/os-release; then
-        create_swap_if_ram_less_than 1024 $os_dir/swapfile
-        mount_pseudo_fs $os_dir
-        cp_resolv_conf $os_dir
-        find_and_mount /boot
-        find_and_mount /boot/efi
-
-        disable_jeos_firstboot $os_dir
-
-        # 禁用 selinux
-        disable_selinux $os_dir
-
-        # opensuse leap 15.6 用 wicked
-        # opensuse leap 16.0 / tumbleweed 用 NetworkManager
-        if chroot $os_dir rpm -qi wicked; then
-            # sysconfig ifcfg
-            create_cloud_init_network_config $os_dir/net.cfg
-            chroot $os_dir cloud-init devel net-convert \
-                -p /net.cfg -k yaml -d out -D opensuse -O sysconfig
-
-            # 删除
-            # Created by cloud-init on instance boot automatically, do not edit.
-            #
-            sed -i '/^#/d' "$os_dir/out/etc/sysconfig/network/ifcfg-eth"*
-
-            for ethx in $(get_eths); do
-                # 1. 修复甲骨文云重启后 ipv6 丢失
-                # https://github.com/openSUSE/wicked/issues/1058
-                # 还要注意 wicked dhcpv6 获取到的 ipv6 是 /64，其他 DHCPv6 程序获取到的是 /128
-                echo DHCLIENT6_USE_LAST_LEASE=no >>$os_dir/out/etc/sysconfig/network/ifcfg-$ethx
-
-                # 2. 修复 onlink 网关
-                for prefix in '' 'default '; do
-                    if is_staticv4; then
-                        get_netconf_to ipv4_gateway
-                        echo "${prefix}${ipv4_gateway} - -" >>$os_dir/out/etc/sysconfig/network/ifroute-$ethx
-                    fi
-                    if is_staticv6; then
-                        get_netconf_to ipv6_gateway
-                        echo "${prefix}${ipv6_gateway} - -" >>$os_dir/out/etc/sysconfig/network/ifroute-$ethx
-                    fi
-                done
-            done
-
-            # 复制配置
-            for file in \
-                "$os_dir/out/etc/sysconfig/network/ifcfg-eth"* \
-                "$os_dir/out/etc/sysconfig/network/ifroute-eth"*; do
-                # 动态 ip 没有 ifroute-eth*
-                if [ -f $file ]; then
-                    cp $file $os_dir/etc/sysconfig/network/
-                fi
-            done
-
-            # 清理
-            rm -rf $os_dir/net.cfg $os_dir/out
-
-        else
-            # 如果使用 cloud-init 则需要 touch NetworkManager.conf
-            # 更新到 cloud-init 24.1 后删除
-            # touch $os_dir/etc/NetworkManager/NetworkManager.conf
-
-            # 可以直接用 alpine 的 cloud-init 生成 Network Manager 配置
-            create_cloud_init_network_config /net.cfg
-            create_network_manager_config /net.cfg "$os_dir"
-            rm /net.cfg
-        fi
-
-        # 选择新内核
-        # 只有 leap 有 kernel-azure
-        if grep -iq leap $os_dir/etc/os-release && [ "$(get_cloud_vendor)" = azure ]; then
-            target_kernel='kernel-azure'
-        else
-            target_kernel='kernel-default'
-        fi
-
-        # rpm -qi 不支持通配符
-        origin_kernel=$(chroot $os_dir rpm -qa 'kernel-*' --qf '%{NAME}\n' | grep -v firmware)
-        if ! [ "$(echo "$origin_kernel" | wc -l)" -eq 1 ]; then
-            error_and_exit "Unexpected kernel installed: $origin_kernel"
-        fi
-
-        # 16.0 能同时装 kernel-default-base 和 kernel-default
-        # tw 不能同时装 kernel-default-base 和 kernel-default
-        # 因此需要添加 --force-resolution 自动删除 kernel-default-base
-        if ! [ "$origin_kernel" = "$target_kernel" ]; then
-            # x86 必须设置一个密码，否则报错，arm 没有这个问题
-            # Failed to get root password hash
-            # Failed to import /etc/uefi/certs/76B6A6A0.crt
-            # warning: %post(kernel-default-5.14.21-150500.55.83.1.x86_64) scriptlet failed, exit status 255
-            need_password_workaround=false
-            if grep -q '^root:[:!*]' $os_dir/etc/shadow; then
-                need_password_workaround=true
-            fi
-
-            if $need_password_workaround; then
-                echo "root:$(mkpasswd '')" | chroot $os_dir chpasswd -e
-            fi
-            # 安装新内核
-            chroot $os_dir zypper install -y --force-resolution $target_kernel
-            # 删除旧内核
-            if chroot $os_dir rpm -q $origin_kernel; then
-                chroot $os_dir zypper remove -y --force-resolution $origin_kernel
-            fi
-            if $need_password_workaround; then
-                chroot $os_dir passwd -d root
-            fi
-        fi
-
-        # 固件+微码
-        if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
-            chroot $os_dir zypper install -y $fw_pkgs
-        fi
-
-        # 最后才删除 cloud-init
-        # 因为生成 sysconfig 网络配置要用目标系统的 cloud-init
-        remove_cloud_init $os_dir
-
-        restore_resolv_conf $os_dir
-    fi
 
     # arch 云镜像
-    if false && [ -f $os_dir/etc/arch-release ]; then
-        # 修复 onlink 网关
-        add_onlink_script_if_need
-
-        # 同步证书
-        cp_resolv_conf $os_dir
-        mount_pseudo_fs $os_dir
-        chroot $os_dir pacman-key --init
-        chroot $os_dir pacman-key --populate
-        rm_resolv_conf $os_dir
-    fi
 
     # gentoo 云镜像
-    if false && [ -f $os_dir/etc/gentoo-release ]; then
-        # 挂载伪文件系统
-        mount_pseudo_fs $os_dir
-        cp_resolv_conf $os_dir
-
-        # 在这里修改密码，而不是用cloud-init，因为我们的默认密码太弱
-        is_password_plaintext && sed -i 's/enforce=everyone/enforce=none/' $os_dir/etc/security/passwdqc.conf
-        change_root_password $os_dir
-        is_password_plaintext && sed -i 's/enforce=none/enforce=everyone/' $os_dir/etc/security/passwdqc.conf
-
-        # 下载仓库，选择 profile
-        chroot $os_dir emerge-webrsync
-        profile=$(chroot $os_dir eselect profile list | grep stable | grep systemd |
-            awk '{print length($2), $2}' | sort -n | head -1 | awk '{print $2}')
-        chroot $os_dir eselect profile set $profile
-
-        # 删除 resolv.conf，不然 systemd-resolved 无法创建软链接
-        rm_resolv_conf $os_dir
-
-        # 启用网络服务
-        chroot $os_dir systemctl enable systemd-networkd
-        chroot $os_dir systemctl enable systemd-resolved
-
-        # systemd-networkd 有时不会运行
-        # https://bugs.gentoo.org/910404 补丁好像没用
-        # https://github.com/systemd/systemd/issues/27718#issuecomment-1564877478
-        # 临时的解决办法是运行 networkctl，如果启用了systemd-networkd服务，会运行服务
-        insert_into_file $os_dir/lib/systemd/system/systemd-logind.service after '\[Service\]' <<EOF
-ExecStartPost=-networkctl
-EOF
-
-        # 如果创建了 cloud-init.disabled，重启后网络不受 networkd 管理
-        # 因为网卡名变回了 ens3 而不是 eth0
-        # 因此要删除 networkd 的网卡名匹配
-        insert_into_file $ci_file after '^runcmd:' <<EOF
-  - sed -i '/^Name=/d' /etc/systemd/network/10-cloud-init-eth*.network
-EOF
-
-        # 修复 onlink 网关
-        add_onlink_script_if_need
-    fi
 
     basic_init $os_dir
 
@@ -2907,57 +2486,6 @@ change_root_password() {
     fi
 }
 
-disable_selinux() {
-    os_dir=$1
-
-    # https://access.redhat.com/solutions/3176
-    # centos7 也建议将 selinux 开关写在 cmdline
-    # grep selinux=0 /usr/lib/dracut/modules.d/98selinux/selinux-loadpolicy.sh
-    #     warn "To disable selinux, add selinux=0 to the kernel command line."
-    if [ -f $os_dir/etc/selinux/config ]; then
-        sed -i 's/^SELINUX=enforcing/SELINUX=disabled/g' $os_dir/etc/selinux/config
-    fi
-
-    # opensuse 没有安装 grubby
-    if is_have_cmd_on_disk $os_dir grubby; then
-        # grubby 只处理 GRUB_CMDLINE_LINUX，不会处理 GRUB_CMDLINE_LINUX_DEFAULT
-        # rocky 的 GRUB_CMDLINE_LINUX_DEFAULT 有 crashkernel=auto
-        chroot $os_dir grubby --update-kernel ALL --args selinux=0
-
-        # el7 上面那条 grubby 命令不能设置 /etc/default/grub
-        sed -i 's/selinux=1/selinux=0/' $os_dir/etc/default/grub
-    else
-        # 有可能没有 selinux 参数，但现在的镜像没有这个问题
-        # sed -Ei 's/[[:space:]]?(security|selinux|enforcing)=[^ ]*//g' $os_dir/etc/default/grub
-        sed -i 's/selinux=1/selinux=0/' $os_dir/etc/default/grub
-
-        # 如果需要用 snapshot 可以用 transactional-update grub.cfg
-        chroot $os_dir grub2-mkconfig -o /boot/grub2/grub.cfg
-    fi
-}
-
-disable_kdump() {
-    os_dir=$1
-
-    # grubby 只处理 GRUB_CMDLINE_LINUX，不会处理 GRUB_CMDLINE_LINUX_DEFAULT
-    # rocky 的 GRUB_CMDLINE_LINUX_DEFAULT 有 crashkernel=auto
-
-    # 新安装的内核依然有 crashkernel，好像是 bug
-    # https://forums.rockylinux.org/t/how-do-i-remove-crashkernel-from-cmdline/13346
-    # 验证过程
-    # yum remove --oldinstallonly   # 删除旧内核
-    # rm -rf /boot/loader/entries/* # 删除启动条目
-    # yum reinstall kernel-core     # 重新安装新内核
-    # cat /boot/loader/entries/*    # 依然有 crashkernel=1G-4G:192M,4G-64G:256M,64G-:512M
-
-    chroot $os_dir grubby --update-kernel ALL --args crashkernel=no
-    # el7 上面那条 grubby 命令不能设置 /etc/default/grub
-    sed -i 's/crashkernel=[^ "]*/crashkernel=no/' $os_dir/etc/default/grub
-    if chroot $os_dir systemctl -q is-enabled kdump; then
-        chroot $os_dir systemctl disable kdump
-    fi
-}
-
 download_qcow() {
     apk add qemu-img
     info "Download qcow2 image"
@@ -3080,14 +2608,6 @@ get_cloud_image_part_size() {
     fi
 }
 
-chroot_dnf() {
-    if is_have_cmd_on_disk /os/ dnf; then
-        chroot /os/ dnf -y "$@"
-    else
-        chroot /os/ yum -y "$@"
-    fi
-}
-
 chroot_apt_update() {
     os_dir=$1
 
@@ -3157,41 +2677,6 @@ chroot_apt_autoremove() {
     change_confs change
     DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get autoremove --purge -y
     change_confs restore
-}
-
-del_default_user() {
-    os_dir=$1
-
-    while read -r user; do
-        if grep ^$user':\$' "$os_dir/etc/shadow"; then
-            echo "Deleting user $user"
-            chroot "$os_dir" userdel -rf "$user"
-        fi
-    done < <(grep -v nologin$ "$os_dir/etc/passwd" | cut -d: -f1 | grep -v root)
-}
-
-del_exist_sysconfig_NetworkManager_config() {
-    os_dir=$1
-
-    # 删除云镜像自带的 dhcp 配置，防止歧义
-    rm -rf $os_dir/etc/NetworkManager/system-connections/*.nmconnection
-    rm -rf $os_dir/etc/sysconfig/network-scripts/ifcfg-*
-
-    # 1. 修复 cloud-init 添加了 IPV*_FAILURE_FATAL / may-fail=false
-    #    甲骨文 dhcpv6 获取不到 IP 将视为 fatal，原有的 ipv4 地址也会被删除
-    # 2. 修复 dhcpv6 下，ifcfg 添加了 IPV6_AUTOCONF=no 导致无法获取网关
-    # 3. 修复 dhcpv6 下，NM method=dhcp 导致无法获取网关
-    if false; then
-        ci_file=$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg
-
-        insert_into_file $ci_file after '^runcmd:' <<EOF
-  - sed -i '/^IPV[46]_FAILURE_FATAL=/d' /etc/sysconfig/network-scripts/ifcfg-* || true
-  - sed -i '/^may-fail=/d' /etc/NetworkManager/system-connections/*.nmconnection || true
-  - for f in /etc/sysconfig/network-scripts/ifcfg-*; do grep -q '^DHCPV6C=yes' "\$f" && sed -i '/^IPV6_AUTOCONF=no/d' "\$f"; done
-  - sed -i 's/^method=dhcp/method=auto/' /etc/NetworkManager/system-connections/*.nmconnection || true
-  - systemctl is-enabled NetworkManager && systemctl restart NetworkManager || true
-EOF
-    fi
 }
 
 install_qcow_by_copy() {
