@@ -314,11 +314,6 @@ setup_websocketd() {
 }
 
 get_approximate_ram_size() {
-    # lsmem 需要 util-linux
-    if false && is_have_cmd lsmem; then
-        ram_size=$(lsmem -b 2>/dev/null | grep 'Total online memory:' | awk '{ print $NF/1024/1024 }')
-    fi
-
     if [ -z $ram_size ]; then
         ram_size=$(free -m | awk '{print $2}' | sed -n '2p')
     fi
@@ -525,36 +520,6 @@ cache_dmi_and_virt() {
 is_virt() {
     cache_dmi_and_virt
     [ -n "$_virt" ]
-}
-
-is_virt_contains() {
-    cache_dmi_and_virt
-    echo "$_virt" | grep -Eiwq "$1"
-}
-
-is_dmi_contains() {
-    # Manufacturer: Alibaba Cloud
-    # Manufacturer: Tencent Cloud
-    # Manufacturer: Huawei Cloud
-    # Asset Tag: OracleCloud.com
-    # Vendor: Amazon EC2
-    # Manufacturer: Amazon EC2
-    # Asset Tag: Amazon EC2
-    cache_dmi_and_virt
-    echo "$_dmi" | grep -Eiwq "$1"
-}
-
-cache_lspci() {
-    if [ -z "$_lspci" ]; then
-        apk add pciutils
-        _lspci=$(lspci)
-        apk del pciutils
-    fi
-}
-
-is_lspci_contains() {
-    cache_lspci
-    echo "$_lspci" | grep -Eiwq "$1"
 }
 
 get_config() {
@@ -983,27 +948,6 @@ EOF
     # ethx
     for ethx in $(get_eths); do
         mode=auto
-        # shellcheck disable=SC2154
-        if false; then
-            if [ "$distro" = debian ] && [ "$releasever" -ge 12 ]; then
-                # alice + allow-hotplug 会有问题
-                # 问题 1 debian 9/10/11/12:
-                # 如果首次启动时，/etc/networking/interfaces 的 ethx 跟安装时不同
-                # 即使启动 networking 服务前成功执行了 fix-eth-name.sh ，网卡也不会启动
-                # 测试方法: 安装时手动修改 /etc/networking/interfaces enp3s0 为其他名字
-                # 问题 2 debian 9/10/11:
-                # 重启系统后会自动启动网卡，但运行 systemctl restart networking 会关闭网卡
-                # 可能的原因: /lib/systemd/system/networking.service 没有 hotplug 相关内容，而 debian 12+ 有
-                if [ -f /etc/network/devhotplug ] && grep -wo "$ethx" /etc/network/devhotplug; then
-                    mode=allow-hotplug
-                fi
-            fi
-
-            # if is_have_cmd udevadm; then
-            #     enpx=$(udevadm test-builtin net_id /sys/class/net/$ethx 2>&1 | grep ID_NET_NAME_PATH= | cut -d= -f2)
-            # fi
-        fi
-
         # dmit debian 普通内核和云内核网卡名不一致，因此需要 rename
         # 安装系统时 ens18
         # 普通内核   ens18
@@ -1051,6 +995,7 @@ EOF
             # inet/inet6 都配置成 dhcp 时，重启后 dhcpv4 会丢失
             # 手动 systemctl restart networking 后正常
             # 删除 dhcpcd-base 安装 isc-dhcp-client（类似 debian 12 升级到 13），轮到 dhcpv6 丢失
+            # shellcheck disable=SC2154
             if [ "$distro" = debian ] && [ "$releasever" -ge 13 ]; then
                 echo "iface $ethx inet6 auto" >>$conf_file
             else
@@ -1221,13 +1166,6 @@ install_alpine() {
         kernel_flavor="virt"
     else
         kernel_flavor="lts"
-    fi
-
-    # 重置为官方仓库配置
-    # 国内机可能无法访问mirror列表而报错
-    if false; then
-        true >/etc/apk/repositories
-        setup-apkrepos -1
     fi
 
     # setup-disk 安装 grub 跳过了添加引导项到 nvram
@@ -2076,11 +2014,6 @@ remove_cloud_init() {
 
     info "Remove Cloud-Init"
 
-    # 两种方法都可以
-    if false && [ -d $os_dir/etc/cloud ]; then
-        touch $os_dir/etc/cloud/cloud-init.disabled
-    fi
-
     # systemctl is-enabled cloud-init-hotplugd.service 状态是 static
     # disable 会出现一堆提示信息，也无法 disable
     for unit in $(
@@ -2249,31 +2182,7 @@ modify_linux() {
         # debian 12 netplan + networkd + resolved
         # ifupdown dhcp 不支持 24位掩码+不规则网关?
 
-        # 强制使用 netplan
-        if false && is_have_cmd_on_disk $os_dir netplan; then
-            chroot_apt_install $os_dir netplan.io
-            # 服务不存在时会报错
-            chroot $os_dir systemctl disable networking resolvconf 2>/dev/null || true
-            chroot $os_dir systemctl enable systemd-networkd systemd-resolved
-            rm_resolv_conf $os_dir
-            ln -sf ../run/systemd/resolve/stub-resolv.conf $os_dir/etc/resolv.conf
-            if [ -f "$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg" ]; then
-                insert_into_file $os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg after '#cloud-config' <<EOF
-system_info:
-  network:
-    renderers: [netplan]
-    activators: [netplan]
-EOF
-            fi
-        fi
-
         create_ifupdown_config $os_dir/etc/network/interfaces
-
-        # ifupdown 不支持 rdnss
-        # 但 iso 安装不会安装 rdnssd，而是在安装时读取 rdnss 并写入 resolv.conf
-        if false; then
-            chroot_apt_install $os_dir rdnssd
-        fi
 
         # debian 10 11 云镜像安装了 resolvconf
         # debian 12 云镜像安装了 netplan systemd-resolved

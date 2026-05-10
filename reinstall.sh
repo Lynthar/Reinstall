@@ -1274,13 +1274,8 @@ save_password() {
     # password="-n"
     # echo "$password"  # 空白
 
-    # 明文密码
-    # 假如用户运行 alpine live 直接打包硬盘镜像，如果保存了明文密码，则会暴露明文密码，因为 netboot initrd 在里面
-    # 通过 --password 传入密码，history 有记录，也会暴露明文密码
-    # /reinstall.log 也会暴露明文密码（已处理）
-    if false; then
-        printf '%s' "$password" >>"$dir/password-plaintext"
-    fi
+    # 不保存明文密码：alpine live 镜像可能被打包/分享，--password 也会进 history
+    # /reinstall.log 中的明文已被 grep -iv password 过滤
 
     # sha512
     # 以下系统均支持 sha512 密码，但是生成密码需要不同的工具
@@ -1312,15 +1307,6 @@ save_password() {
         error_and_exit "Could not generate sha512 password."
     fi
     echo "$crypted" >"$dir/password-linux-sha512"
-
-    # yescrypt
-    # 旧系统不支持，先不管
-    if false; then
-        if mkpasswd -m help | grep -wq yescrypt; then
-            crypted=$(printf '%s' "$password" | mkpasswd -m yescrypt --stdin)
-            echo "$crypted" >"$dir/password-linux-yescrypt"
-        fi
-    fi
 }
 
 # 记录主硬盘
@@ -1504,18 +1490,6 @@ collect_netconf() {
                                 # 只取第一个 IP
                                 break
                             fi
-                        fi
-                    done
-                fi
-
-                # 网关
-                # shellcheck disable=SC2154
-                if false; then
-                    for gateway in "${gateways[@]}"; do
-                        if [ -n "$ipv4_addr" ] && [[ "$gateway" = *.* ]]; then
-                            ipv4_gateway="$gateway"
-                        elif [ -n "$ipv6_addr" ] && [[ "$gateway" = *:* ]]; then
-                            ipv6_gateway="$gateway"
                         fi
                     done
                 fi
@@ -2624,19 +2598,6 @@ fi
 # 修改 alpine initrd（nextos 永远是 alpine，dd 模式不进入这里）
 mod_initrd
 
-# 将内核放到正确的位置
-if false && is_need_grub_extlinux; then
-    if is_in_windows; then
-        cp -f /reinstall-vmlinuz /cygdrive/$c/
-        is_have_initrd && cp -f /reinstall-initrd /cygdrive/$c/
-    else
-        if is_os_in_btrfs && is_os_in_subvol; then
-            cp_to_btrfs_root /reinstall-vmlinuz
-            is_have_initrd && cp_to_btrfs_root /reinstall-initrd
-        fi
-    fi
-fi
-
 # grub / extlinux
 if is_need_grub_extlinux; then
     # win 使用外部 grub
@@ -2679,20 +2640,6 @@ if is_need_grub_extlinux; then
                 # extlinux
                 extlinux_cfg=$(find_grub_extlinux_cfg /boot extlinux.conf LINUX)
             fi
-        fi
-    fi
-
-    # 判断用 linux 还是 linuxefi（主要是红帽系）
-    # 现在 efi 用下载的 grub，因此不需要判断 linux 或 linuxefi
-    if false && is_use_local_grub_extlinux; then
-        # 在x86 efi机器上，不同版本的 grub 可能用 linux 或 linuxefi 加载内核
-        # 通过检测原有的条目有没有 linuxefi 字样就知道当前 grub 用哪一种
-        # 也可以检测 /etc/grub.d/10_linux
-        if [ -d /boot/loader/entries/ ]; then
-            entries="/boot/loader/entries/"
-        fi
-        if grep -q -r -E '^[[:space:]]*linuxefi[[:space:]]' $grub_cfg $entries; then
-            efi=efi
         fi
     fi
 
@@ -2767,12 +2714,14 @@ if is_need_grub_extlinux; then
     firmware=${dir}reinstall-firmware
 
     # 设置 linux initrd 命令
+    # efi 现在统一用下载的 opensuse grub（install_grub_linux_efi），
+    # 它不区分 linux/linuxefi，所以这里不再需要 efi 后缀
     if is_use_local_extlinux; then
         linux_cmd=LINUX
         initrd_cmd=INITRD
     else
-        linux_cmd="linux$efi"
-        initrd_cmd="initrd$efi"
+        linux_cmd=linux
+        initrd_cmd=initrd
     fi
 
     # 设置 cmdlind initrds
