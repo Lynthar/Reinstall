@@ -619,11 +619,6 @@ is_any_ipv4_has_internet() {
     grep -q 1 /dev/netconf/*/ipv4_has_internet
 }
 
-# 始终返回 false，不使用中国镜像源
-is_in_china() {
-    return 1
-}
-
 # 有 dhcpv4 不等于有网关，例如 vultr 纯 ipv6
 # 没有 dhcpv4 不等于是静态ip，可能是没有 ip
 is_dhcpv4() {
@@ -1485,15 +1480,6 @@ install_alpine() {
     chmod +x /os/etc/init.d/fix-eth-name
     chroot /os rc-update add fix-eth-name boot
 
-    # 安装 frpc
-    if [ -s /configs/frpc.toml ]; then
-        chroot /os apk add frp
-        # chroot rc-update add 默认添加到 sysinit
-        # 但不加 chroot 默认添加到 default
-        chroot /os rc-update add frpc boot
-        cp /configs/frpc.toml /os/etc/frp/frpc.toml
-    fi
-
     # setup-disk 会自动选择固件，但不包括微码？
     # https://github.com/alpinelinux/alpine-conf/blob/3.18.1/setup-disk.in#L421
     if fw_pkgs="$fw_pkgs $(get_ucode_firmware_pkgs)" && [ -n "$fw_pkgs" ]; then
@@ -1566,8 +1552,7 @@ install_nixos() {
 
     show_nixos_config() {
         echo
-        # 过滤 frp auth.token
-        cat -n /os/etc/nixos/configuration.nix | grep -Fv 'auth.token'
+        cat -n /os/etc/nixos/configuration.nix
         echo
         cat -n /os/etc/nixos/hardware-configuration.nix
         echo
@@ -1612,9 +1597,6 @@ install_nixos() {
         # https://gitlab.alpinelinux.org/alpine/aports/-/blob/master/community/nix/APKBUILD#L125
         sed -i '/max-jobs/d' /etc/nix/nix.conf
         echo "max-jobs = $threads" >>/etc/nix/nix.conf
-        if is_in_china; then
-            echo "substituters = $mirror/store" >>/etc/nix/nix.conf
-        fi
         rc-service -q nix-daemon restart
         # 添加 nix-env 安装的软件到 PATH
         PATH="/root/.nix-profile/bin:$PATH"
@@ -1630,13 +1612,6 @@ install_nixos() {
             done
         fi
 
-        # 备用方案
-        # 1. 从 https://mirror.nju.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz 获取
-        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.11/pkgs/tools/package-management/nix/default.nix
-        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.11/nixos/modules/installer/tools/nix-fallback-paths.nix
-        # 2. 安装最新版 nix，添加 nixos channel 后获取
-        #    nix eval -f '<nixpkgs>' --raw 'nixVersions.stable.version' --extra-experimental-features nix-command
-
         if true; then
             # nix 版本号使用目标系统里面的
             download $mirror/nixos-$releasever/store-paths.xz /os/store-paths.xz
@@ -1644,20 +1619,11 @@ install_nixos() {
             nix_ver=$(xz -dc </os/store-paths.xz | grep -F 'vm-test-run-nix-upgrade' |
                 head -1 | awk -F- '{print $7}' | grep .)
             rm -f /os/store-paths.xz
-            if is_in_china; then
-                sh_mirror=https://mirror.nju.edu.cn/nix
-            else
-                sh_mirror=https://releases.nixos.org/nix
-            fi
-            sh=$sh_mirror/nix-$nix_ver/install
+            sh=https://releases.nixos.org/nix/nix-$nix_ver/install
         else
             # 最新版 nix 在 nixos-install 时可能会出问题
             # https://github.com/bin456789/reinstall/issues/451
-            if is_in_china; then
-                sh=https://mirror.nju.edu.cn/nix/latest/install
-            else
-                sh=https://nixos.org/nix/install
-            fi
+            sh=https://nixos.org/nix/install
         fi
 
         apk add xz
@@ -1695,10 +1661,6 @@ install_nixos() {
         nix_bootloader="boot.loader.grub.device = \"/dev/$xda\";"
     fi
 
-    if is_in_china; then
-        nix_substituters="nix.settings.substituters = lib.mkForce [ \"$mirror/store\" ];"
-    fi
-
     if [ -e /os/swapfile ] && $keep_swap; then
         nix_swap="swapDevices = [{ device = \"/swapfile\"; size = $swap_size; }];"
     fi
@@ -1717,22 +1679,6 @@ $(del_comment_lines </configs/ssh_keys | del_empty_lines | quote_line | add_spac
         nix_ssh_ports="services.openssh.ports = [ $ssh_port ];"
     fi
 
-    # 虽然是原始 frpc.toml (string) 转成 toml 类型，再转成最终使用的 frpc.toml (string)
-    # 但是可以避免原始 frpc.toml 有错误导致失联
-    if [ -s /configs/frpc.toml ]; then
-        nix_frpc=$(
-            cat <<EOF
-services.frp = {
-  enable = true;
-  role = "client";
-  settings = builtins.fromTOML ''
-$(del_comment_lines </configs/frpc.toml | add_space 4)
-  '';
-};
-EOF
-        )
-    fi
-
     # TODO: 准确匹配网卡，添加 udev 或者直接配置 networkd 匹配 mac
     create_nixos_network_config /tmp/nixos_network_config.nix
 
@@ -1740,12 +1686,10 @@ EOF
 ############### Add by reinstall.sh ###############
 $nix_bootloader
 $nix_swap
-$nix_substituters
 boot.kernelParams = [ $(get_ttys console= | quote_word) ];
 services.openssh.enable = true;
 $nix_ssh_keys_or_PermitRootLogin
 $nix_ssh_ports
-$nix_frpc
 $(cat /tmp/nixos_network_config.nix)
 ###################################################
 EOF
@@ -1794,12 +1738,6 @@ EOF
     if ! is_need_set_ssh_keys; then
         echo "root:$(get_password_linux_sha512)" | nixos-enter --root /os -- \
             /run/current-system/sw/bin/chpasswd -e
-    fi
-
-    # 设置 channel
-    if is_in_china; then
-        nixos-enter --root /os -- \
-            /run/current-system/sw/bin/nix-channel --add $mirror/nixos-$releasever nixos
     fi
 
     # 清理
@@ -1853,36 +1791,6 @@ add_fix_eth_name_systemd_service() {
     # 因为 chroot 下执行会提示 Running in chroot, ignoring command 'daemon-reload'
     download "$confhome/fix-eth-name.sh" "$os_dir/fix-eth-name.sh"
     add_systemd_service "$os_dir" fix-eth-name
-}
-
-get_frpc_url() {
-    wget "$confhome/get-frpc-url.sh" -O- | sh -s "$@"
-}
-
-add_frpc_systemd_service_if_need() {
-    local os_dir=$1
-
-    if [ -s /configs/frpc.toml ]; then
-        mkdir -p "$os_dir/usr/local/bin"
-        mkdir -p "$os_dir/usr/local/etc/frpc"
-
-        # 下载 frpc
-        # 注意下载的 frpc owner 不是 root:root
-        frpc_url=$(get_frpc_url linux)
-        basename=$(echo "$frpc_url" | awk -F/ '{print $NF}' | sed 's/\.tar\.gz//')
-        download "$frpc_url" "$os_dir/frpc.tar.gz"
-        # busybox tar 不支持 wildcard
-        # tar: */frpc: not found in archive
-        tar xzf "$os_dir/frpc.tar.gz" "$basename/frpc" -O >"$os_dir/usr/local/bin/frpc"
-        rm -f "$os_dir/frpc.tar.gz"
-        chmod a+x "$os_dir/usr/local/bin/frpc"
-
-        # frpc conf
-        cp /configs/frpc.toml "$os_dir/usr/local/etc/frpc/frpc.toml"
-
-        # 添加服务
-        add_systemd_service "$os_dir" frpc
-    fi
 }
 
 basic_init() {
@@ -1940,9 +1848,6 @@ basic_init() {
     # 即使开了 net.ifnames=0 也需要
     # 因为 alpine live 和目标系统的网卡顺序可能不同
     add_fix_eth_name_systemd_service $os_dir
-
-    # frpc
-    add_frpc_systemd_service_if_need $os_dir
 }
 
 install_arch_gentoo_aosc() {
@@ -2112,13 +2017,9 @@ EOF
         chroot $os_dir emerge dev-vcs/git
 
         # 设置 git repo
-        if is_in_china; then
-            git_uri=https://mirror.nju.edu.cn/git/gentoo-portage.git
-        else
-            # github 不支持 ipv6
-            is_any_ipv4_has_internet && git_uri=https://github.com/gentoo-mirror/gentoo.git ||
-                git_uri=https://anongit.gentoo.org/git/repo/gentoo.git
-        fi
+        # github 不支持 ipv6
+        is_any_ipv4_has_internet && git_uri=https://github.com/gentoo-mirror/gentoo.git ||
+            git_uri=https://anongit.gentoo.org/git/repo/gentoo.git
 
         mkdir -p $os_dir/etc/portage/repos.conf
         cat <<EOF >$os_dir/etc/portage/repos.conf/gentoo.conf
@@ -3008,27 +2909,6 @@ modify_windows() {
         bats="$bats windows-set-netconf-$ethx.bat"
     done
 
-    # 5 frp
-    if [ -s /configs/frpc.toml ]; then
-        # 好像 win7 无法运行 frpc，暂时不管
-        windows_arch=$(get_windows_arch_from_windows_drive "$os_dir" | to_lower)
-        if [ "$windows_arch" = amd64 ] || [ "$windows_arch" = arm64 ]; then
-            mkdir -p "$os_dir/frpc/"
-            url=$(get_frpc_url windows "$nt_ver")
-            download "$url" $os_dir/frpc/frpc.zip
-            # -j 去除文件夹
-            # -C 筛选文件时不区分大小写，但 busybox zip 不支持
-            unzip -o -j "$os_dir/frpc/frpc.zip" '*/frpc.exe' -d "$os_dir/frpc/"
-            rm -f "$os_dir/frpc/frpc.zip"
-            cp -f /configs/frpc.toml "$os_dir/frpc/frpc.toml"
-            download "$confhome/windows-frpc.xml" "$os_dir/frpc/frpc.xml"
-            download "$confhome/windows-frpc.bat" "$os_dir/frpc/frpc.bat"
-            bats="$bats frpc\frpc.bat"
-        else
-            warn "$windows_arch Not Support frpc"
-        fi
-    fi
-
     if $use_gpo; then
         # 使用组策略
         scripts_ini=$(get_path_in_correct_case $os_dir/Windows/System32/GroupPolicy/Machine/Scripts/scripts.ini)
@@ -3445,16 +3325,6 @@ Signed-By: /etc/apt/trusted.gpg.d/freexian-archive-extended-lts.gpg
 EOF
             else
                 echo "deb http://$deb_mirror $codename $comps" >$os_dir/etc/apt/sources.list
-            fi
-        else
-            # non-ELTS
-            if is_in_china; then
-                # 不处理 security 源 security.debian.org/debian-security 和 /etc/apt/mirrors/debian-security.list
-                for file in $os_dir/etc/apt/mirrors/debian.list $os_dir/etc/apt/sources.list; do
-                    if [ -f "$file" ]; then
-                        sed -i "s|deb\.debian\.org/debian|$deb_mirror|" "$file"
-                    fi
-                done
             fi
         fi
 
@@ -4395,9 +4265,6 @@ install_fnos() {
 
     # 修正网卡名
     add_fix_eth_name_systemd_service $os_dir
-
-    # frpc
-    add_frpc_systemd_service_if_need $os_dir
 }
 
 install_qcow_by_copy() {
@@ -4428,11 +4295,7 @@ install_qcow_by_copy() {
             # centos 7 eol 换源
             if [ -f /os/etc/yum.repos.d/CentOS-Base.repo ]; then
                 # 保持默认的 http 因为自带的 ssl 证书可能过期
-                if is_in_china; then
-                    mirror=mirror.nju.edu.cn/centos-vault
-                else
-                    mirror=vault.centos.org
-                fi
+                mirror=vault.centos.org
                 sed -Ei -e 's,(mirrorlist=),#\1,' \
                     -e "s,#(baseurl=http://)mirror.centos.org,\1$mirror," /os/etc/yum.repos.d/CentOS-Base.repo
             fi
@@ -4683,20 +4546,6 @@ EOF
         # 关闭 os prober，因为 os prober 有时很慢
         cp $os_dir/etc/default/grub $os_dir/etc/default/grub.orig
         echo 'GRUB_DISABLE_OS_PROBER=true' >>$os_dir/etc/default/grub
-
-        # 更改源
-        if is_in_china; then
-            # 22.04 使用 /etc/apt/sources.list
-            # 24.04 使用 /etc/apt/sources.list.d/ubuntu.sources
-            for file in $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/ubuntu.sources; do
-                if [ -f $file ]; then
-                    # cn.archive.ubuntu.com 不在国内还严重丢包
-                    # https://www.itdog.cn/ping/cn.archive.ubuntu.com
-                    sed -i 's/archive.ubuntu.com/mirror.nju.edu.cn/' $file # x64
-                    sed -i 's/ports.ubuntu.com/mirror.nju.edu.cn/' $file   # arm
-                fi
-            done
-        fi
 
         # 16.04 arm64 镜像没有 grub 引导文件
         if is_efi && ! [ -d $os_dir/boot/efi/EFI/ubuntu ]; then
@@ -5441,11 +5290,7 @@ create_win_change_rdp_port_script() {
 # virt-what 可能会输出多行结果，因此用 grep
 
 get_aws_repo() {
-    if is_in_china >&2; then
-        echo https://s3.cn-north-1.amazonaws.com.cn/ec2-windows-drivers-downloads-cn
-    else
-        echo https://s3.amazonaws.com/ec2-windows-drivers-downloads
-    fi
+    echo https://s3.amazonaws.com/ec2-windows-drivers-downloads
 }
 
 get_client_name_by_build_ver() {
@@ -6894,19 +6739,6 @@ EOF
     fi
 }
 
-# 添加 netboot.efi 备用
-download_netboot_xyz_efi() {
-    dir=$1
-    info "download netboot.xyz.efi"
-
-    file=$dir/netboot.xyz.efi
-    if [ "$(uname -m)" = aarch64 ]; then
-        download https://boot.netboot.xyz/ipxe/netboot.xyz-arm64.efi $file
-    else
-        download https://boot.netboot.xyz/ipxe/netboot.xyz.efi $file
-    fi
-}
-
 refind_main_disk() {
     if true; then
         apk add sfdisk
@@ -6932,11 +6764,7 @@ sync_time() {
 
     case "$method" in
     ntp)
-        if is_in_china; then
-            ntp_server=ntp.aliyun.com
-        else
-            ntp_server=pool.ntp.org
-        fi
+        ntp_server=pool.ntp.org
         # -d[d]   Verbose
         # -n      Run in foreground
         # -q      Quit after clock is set
@@ -7276,18 +7104,6 @@ if is_need_set_ssh_keys; then
 else
     change_root_password /
     printf '\nyes' | setup-sshd
-fi
-
-# 设置 frpc
-# 并防止重复运行
-if [ -s /configs/frpc.toml ] && ! pidof frpc >/dev/null; then
-    info 'run frpc'
-    add_community_repo
-    apk add frp
-    while true; do
-        frpc -c /configs/frpc.toml || true
-        sleep 5
-    done &
 fi
 
 # shellcheck disable=SC2154

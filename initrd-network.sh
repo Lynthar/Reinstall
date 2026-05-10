@@ -10,7 +10,6 @@ ipv4_addr=$2
 ipv4_gateway=$3
 ipv6_addr=$4
 ipv6_gateway=$5
-# 第6个参数已废弃，不再使用 is_in_china
 
 DHCP_TIMEOUT=15
 DNS_FILE_TIMEOUT=5
@@ -293,7 +292,6 @@ fi
 
 echo "Configuring $ethx ($mac_addr)..."
 
-# 不开启 lo 则 frp 无法连接 127.0.0.1 22
 ip link set dev lo up
 
 # 开启 ethx
@@ -493,8 +491,6 @@ $dhcpv6_or_slaac && echo 1 >"$netconf/dhcpv6_or_slaac" || echo 0 >"$netconf/dhcp
 $should_disable_dhcpv4 && echo 1 >"$netconf/should_disable_dhcpv4" || echo 0 >"$netconf/should_disable_dhcpv4"
 $should_disable_accept_ra && echo 1 >"$netconf/should_disable_accept_ra" || echo 0 >"$netconf/should_disable_accept_ra"
 $should_disable_autoconf && echo 1 >"$netconf/should_disable_autoconf" || echo 0 >"$netconf/should_disable_autoconf"
-# is_in_china 已废弃，始终写入 0
-echo 0 >"$netconf/is_in_china"
 echo "$ethx" >"$netconf/ethx"
 echo "$mac_addr" >"$netconf/mac_addr"
 echo "$ipv4_addr" >"$netconf/ipv4_addr"

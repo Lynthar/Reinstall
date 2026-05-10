@@ -3,43 +3,20 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "reinstall.*"
+      - "reinstall.sh"
+      - "trans.sh"
+      - ".github/workflows/run_reinstall.yml"
 jobs:
   run:
     name: 运行主程序
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        include:
-          - os: ubuntu-latest
-            command: sudo bash reinstall.sh --debug --password 123@@@
-          - os: windows-latest
-            command: ./reinstall.bat --debug --password 123@@@
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
-      - run: |
-          git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - run: |
-          # ${{ matrix.command }} centos
-          ${{ matrix.command }} almalinux
-          # ${{ matrix.command }} rocky
-          # ${{ matrix.command }} fedora
-          # ${{ matrix.command }} oracle
-          ${{ matrix.command }} ubuntu
-          ${{ matrix.command }} debian
-          ${{ matrix.command }} debian --ci
-          # ${{ matrix.command }} kali
-          # ${{ matrix.command }} alpine
-          # ${{ matrix.command }} opensuse
-          # ${{ matrix.command }} arch
-          # ${{ matrix.command }} gentoo
-
-          ${{ matrix.command }} netboot.xyz
-          ${{ matrix.command }} dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
-          ${{ matrix.command }} windows --image-name='Windows Server blah' --iso https://aka.ms/HCIReleaseImage
-
-          # 测试失败例子
-          # ${{ matrix.command }} wrong-os
-          # ${{ matrix.command }} dd --img=https://github.com/
-          # ${{ matrix.command }} windows --iso=https://github.com/ --image-name=abc
+      - name: dd
+        run: sudo bash reinstall.sh --debug --password 123@@@ dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
+      - name: alpine
+        run: sudo bash reinstall.sh --debug --password 123@@@ alpine
+      - name: debian cloud image
+        run: sudo bash reinstall.sh --debug --password 123@@@ debian --ci
+      - name: ubuntu cloud image
+        run: sudo bash reinstall.sh --debug --password 123@@@ ubuntu --ci

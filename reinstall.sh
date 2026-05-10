@@ -3,8 +3,8 @@
 # shellcheck disable=SC2086
 
 set -eE
-# 配置文件下载地址 - 请修改为您自己的仓库地址
-confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
+# 配置文件下载地址
+confhome=https://raw.githubusercontent.com/Lynthar/Reinstall/main
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0004
@@ -79,14 +79,12 @@ Usage: $reinstall_____ anolis      7|8|23
                        dd          --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
                        windows     --image-name="windows xxx yyy" --lang=xx-yy
                        windows     --image-name="windows xxx yyy" --iso="http://xxx.com/xxx.iso"
-                       netboot.xyz
 
        Options:        For Linux/Windows:
                        [--password  PASSWORD]
                        [--ssh-key   KEY]
                        [--ssh-port  PORT]
                        [--web-port  PORT]
-                       [--frpc-toml PATH]
 
                        For Windows Only:
                        [--allow-ping]
@@ -188,11 +186,6 @@ mask2cidr() {
     echo $(($2 + (${#x} / 4)))
 }
 
-# 始终返回 false，不使用中国镜像源
-is_in_china() {
-    return 1
-}
-
 # 基于 IP 地理位置检测时区
 # 使用多个备用 API 确保可靠性
 detect_timezone() {
@@ -292,16 +285,12 @@ is_host_has_ipv4_and_ipv6() {
     grep -q \. <<<$res && grep -q : <<<$res
 }
 
-is_netboot_xyz() {
-    [ "$distro" = netboot.xyz ]
-}
-
 is_alpine_live() {
     [ "$distro" = alpine ] && [ "$hold" = 1 ]
 }
 
 is_have_initrd() {
-    ! is_netboot_xyz
+    return 0
 }
 
 is_use_firmware() {
@@ -1169,27 +1158,11 @@ setos() {
     local releasever=$3
     info set $step $distro $releasever
 
-    setos_netboot.xyz() {
-        if is_efi; then
-            if [ "$basearch" = aarch64 ]; then
-                eval ${step}_efi=https://boot.netboot.xyz/ipxe/netboot.xyz-arm64.efi
-            else
-                eval ${step}_efi=https://boot.netboot.xyz/ipxe/netboot.xyz.efi
-            fi
-        else
-            eval ${step}_vmlinuz=https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn
-        fi
-    }
-
     setos_alpine() {
         is_virt && flavour=virt || flavour=lts
 
         # 不要用https 因为甲骨文云arm initramfs阶段不会从硬件同步时钟，导致访问https出错
-        if is_in_china; then
-            mirror=http://mirror.nju.edu.cn/alpine/v$releasever
-        else
-            mirror=http://dl-cdn.alpinelinux.org/alpine/v$releasever
-        fi
+        mirror=http://dl-cdn.alpinelinux.org/alpine/v$releasever
         eval ${step}_vmlinuz=$mirror/releases/$basearch/netboot/vmlinuz-$flavour
         eval ${step}_initrd=$mirror/releases/$basearch/netboot/initramfs-$flavour
         eval ${step}_modloop=$mirror/releases/$basearch/netboot/modloop-$flavour
@@ -1219,55 +1192,23 @@ setos() {
         15) codename=duke ;;
         esac
 
-        if ! is_use_cloud_image && is_debian_elts && is_in_china; then
-            warn "
-Due to the lack of Debian Freexian ELTS instaler mirrors in China, the installation time may be longer.
-Continue?
-
-由于没有 Debian Freexian ELTS 国内安装源，安装时间可能会比较长。
-继续安装?
-"
-            read -r -p '[y/N]: '
-            if ! [[ "$REPLY" = [Yy] ]]; then
-                exit
-            fi
-        fi
-
         # udeb_mirror 安装时的源
         # deb_mirror 安装后要修改成的源
         if is_debian_elts; then
-            if is_in_china; then
-                # https://github.com/tuna/issues/issues/1999
-                # nju 也没同步
-                udeb_mirror=deb.freexian.com/extended-lts
-                deb_mirror=mirror.nju.edu.cn/debian-elts
-                initrd_mirror=mirror.nju.edu.cn/debian-archive/debian
-            else
-                # 按道理不应该用官方源，但找不到其他源
-                udeb_mirror=deb.freexian.com/extended-lts
-                deb_mirror=deb.freexian.com/extended-lts
-                initrd_mirror=archive.debian.org/debian
-            fi
+            # 按道理不应该用官方源，但找不到其他源
+            udeb_mirror=deb.freexian.com/extended-lts
+            deb_mirror=deb.freexian.com/extended-lts
+            initrd_mirror=archive.debian.org/debian
         else
-            if is_in_china; then
-                # ftp.cn.debian.org 不在国内还严重丢包
-                # https://www.itdog.cn/ping/ftp.cn.debian.org
-                mirror=mirror.nju.edu.cn/debian
-            else
-                mirror=deb.debian.org/debian # fastly
-            fi
+            mirror=deb.debian.org/debian # fastly
             udeb_mirror=$mirror
             deb_mirror=$mirror
             initrd_mirror=$mirror
         fi
 
         # 云镜像和 firmware 下载源
-        if is_in_china; then
-            cdimage_mirror=https://mirror.nju.edu.cn/debian-cdimage
-        else
-            cdimage_mirror=https://cdimage.debian.org/images # 在瑞典，不是 cdn
-            # cloud.debian.org 同样在瑞典，不是 cdn
-        fi
+        cdimage_mirror=https://cdimage.debian.org/images # 在瑞典，不是 cdn
+        # cloud.debian.org 同样在瑞典，不是 cdn
 
         is_virt && flavour=-cloud || flavour=
         # debian 10 云内核 vultr efi vnc 没有显示
@@ -1308,13 +1249,9 @@ Continue?
             :
         else
             # 传统安装
-            if is_in_china; then
-                hostname=mirror.nju.edu.cn
-            else
-                # http.kali.org 没有 ipv6 地址
-                # http.kali.org (geoip 重定向) 到 kali.download (cf)
-                hostname=kali.download
-            fi
+            # http.kali.org 没有 ipv6 地址
+            # http.kali.org (geoip 重定向) 到 kali.download (cf)
+            hostname=kali.download
             codename=kali-rolling
             mirror=http://$hostname/kali/dists/$codename/main/installer-$basearch_alt/current/images/netboot/debian-installer/$basearch_alt
 
@@ -1343,17 +1280,7 @@ Continue?
 
         if is_use_cloud_image; then
             # cloud image
-            if is_in_china; then
-                # 有的源没有 releases 镜像
-                # https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images/releases/
-                #   https://unicom.mirrors.ustc.edu.cn/ubuntu-cloud-images/releases/
-                #            https://mirror.nju.edu.cn/ubuntu-cloud-images/releases/
-
-                # mirrors.cloud.tencent.com
-                ci_mirror=https://mirror.nju.edu.cn/ubuntu-cloud-images
-            else
-                ci_mirror=https://cloud-images.ubuntu.com
-            fi
+            ci_mirror=https://cloud-images.ubuntu.com
 
             # 以下版本有 minimal 镜像
             # amd64 所有
@@ -1383,17 +1310,10 @@ Continue?
             fi
         else
             # 传统安装
-            if is_in_china; then
-                case "$basearch" in
-                "x86_64") mirror=https://mirror.nju.edu.cn/ubuntu-releases/$releasever ;;
-                "aarch64") mirror=https://mirror.nju.edu.cn/ubuntu-cdimage/releases/$releasever/release ;;
-                esac
-            else
-                case "$basearch" in
-                "x86_64") mirror=https://releases.ubuntu.com/$releasever ;;
-                "aarch64") mirror=https://cdimage.ubuntu.com/releases/$releasever/release ;;
-                esac
-            fi
+            case "$basearch" in
+            "x86_64") mirror=https://releases.ubuntu.com/$releasever ;;
+            "aarch64") mirror=https://cdimage.ubuntu.com/releases/$releasever/release ;;
+            esac
 
             # iso
             filename=$(curl -L $mirror/ | grep -oP "ubuntu-$releasever.*?-live-server-$basearch_alt.iso" |
@@ -1411,18 +1331,10 @@ Continue?
 
     setos_arch() {
         if [ "$basearch" = "x86_64" ]; then
-            if is_in_china; then
-                mirror=https://mirror.nju.edu.cn/archlinux
-            else
-                mirror=https://geo.mirror.pkgbuild.com # geoip
-            fi
+            mirror=https://geo.mirror.pkgbuild.com # geoip
         else
-            if is_in_china; then
-                mirror=https://mirror.nju.edu.cn/archlinuxarm
-            else
-                # https 证书有问题
-                mirror=http://mirror.archlinuxarm.org # geoip
-            fi
+            # https 证书有问题
+            mirror=http://mirror.archlinuxarm.org # geoip
         fi
 
         if is_use_cloud_image; then
@@ -1440,11 +1352,7 @@ Continue?
     }
 
     setos_nixos() {
-        if is_in_china; then
-            mirror=https://mirror.nju.edu.cn/nix-channels
-        else
-            mirror=https://nixos.org/channels
-        fi
+        mirror=https://nixos.org/channels
 
         if is_use_cloud_image; then
             :
@@ -1458,11 +1366,7 @@ Continue?
     }
 
     setos_gentoo() {
-        if is_in_china; then
-            mirror=https://mirror.nju.edu.cn/gentoo
-        else
-            mirror=https://distfiles.gentoo.org # cdn77
-        fi
+        mirror=https://distfiles.gentoo.org # cdn77
 
         dir=releases/$basearch_alt/autobuilds
 
@@ -1490,16 +1394,7 @@ Continue?
         # https://downloadcontent.opensuse.org    # 德国
         # https://downloadcontentcdn.opensuse.org # fastly cdn
 
-        # 很多国内源缺少 aarch64 tumbleweed appliances
-        #                 https://download.opensuse.org/ports/aarch64/tumbleweed/appliances/
-        #          https://mirrors.ustc.edu.cn/opensuse/ports/aarch64/tumbleweed/appliances/
-        # https://mirrors.tuna.tsinghua.edu.cn/opensuse/ports/aarch64/tumbleweed/appliances/
-
-        if is_in_china; then
-            mirror=https://mirror.nju.edu.cn/opensuse
-        else
-            mirror=https://downloadcontentcdn.opensuse.org
-        fi
+        mirror=https://downloadcontentcdn.opensuse.org
 
         if [ "$releasever" = tumbleweed ]; then
             # tumbleweed
@@ -1672,12 +1567,8 @@ Continue with DD?
     }
 
     setos_aosc() {
-        if is_in_china; then
-            mirror=https://mirror.nju.edu.cn/anthon/aosc-os
-        else
-            # 服务器在香港
-            mirror=https://releases.aosc.io
-        fi
+        # 服务器在香港
+        mirror=https://releases.aosc.io
 
         dir=os-$basearch_alt/base
         file=$(curl -L $mirror/$dir/ | grep -oP 'aosc-os_base_.*?\.tar.xz' |
@@ -1704,21 +1595,13 @@ Continue with DD?
 
         if is_use_cloud_image; then
             # ci
-            if is_in_china; then
-                case $distro in
-                centos) ci_mirror="https://mirror.nju.edu.cn/centos-cloud/centos" ;;
-                almalinux) ci_mirror="https://mirror.nju.edu.cn/almalinux/$releasever/cloud/$elarch/images" ;;
-                rocky) ci_mirror="https://mirror.nju.edu.cn/rocky/$releasever/images/$elarch" ;;
-                fedora) ci_mirror="https://mirror.nju.edu.cn/fedora/releases/$releasever/Cloud/$elarch/images" ;;
-                esac
-            else
-                case $distro in
-                centos) ci_mirror="https://cloud.centos.org/centos" ;;
-                almalinux) ci_mirror="https://repo.almalinux.org/almalinux/$releasever/cloud/$elarch/images" ;;
-                rocky) ci_mirror="https://download.rockylinux.org/pub/rocky/$releasever/images/$elarch" ;;
-                fedora) ci_mirror="https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/$releasever/Cloud/$elarch/images" ;;
-                esac
-            fi
+            case $distro in
+            centos) ci_mirror="https://cloud.centos.org/centos" ;;
+            almalinux) ci_mirror="https://repo.almalinux.org/almalinux/$releasever/cloud/$elarch/images" ;;
+            rocky) ci_mirror="https://download.rockylinux.org/pub/rocky/$releasever/images/$elarch" ;;
+            fedora) ci_mirror="https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/$releasever/Cloud/$elarch/images" ;;
+            esac
+
             case $distro in
             centos)
                 case $releasever in
@@ -1862,11 +1745,7 @@ Continue with DD?
     }
 
     setos_openeuler() {
-        if is_in_china; then
-            mirror=https://repo.openeuler.openatom.cn
-        else
-            mirror=https://repo.openeuler.org
-        fi
+        mirror=https://repo.openeuler.org
         if is_use_cloud_image; then
             # ci
             name=$(curl -L "$mirror/" | grep -oE "openEuler-$releasever(-LTS)?(-SP[0-9])?" |
@@ -1948,8 +1827,7 @@ verify_os_name() {
         'gentoo' \
         'aosc' \
         'windows' \
-        'dd' \
-        'netboot.xyz'; do
+        'dd'; do
         read -r ds vers <<<"$os"
         vers_=${vers//\./\\\.}
         finalos=$(echo "$@" | to_lower | sed -n -E "s,^($ds)[ :-]?(|$vers_)$,\1 \2,p")
@@ -1975,7 +1853,7 @@ verify_os_args() {
     esac
 
     case "$distro" in
-    netboot.xyz | windows) [ -z "$ssh_keys" ] || error_and_exit "not support ssh key for $distro" ;;
+    windows) [ -z "$ssh_keys" ] || error_and_exit "not support ssh key for $distro" ;;
     esac
 }
 
@@ -2208,7 +2086,6 @@ is_valid_ram_size() {
 check_ram() {
     ram_standard=$(
         case "$distro" in
-        netboot.xyz) echo 0 ;;
         alpine | debian | kali | dd) echo 256 ;;
         arch | gentoo | aosc | nixos | windows) echo 512 ;;
         redhat | centos | almalinux | rocky | fedora | oracle | ubuntu | anolis | opencloudos | openeuler) echo 1024 ;;
@@ -2227,7 +2104,7 @@ check_ram() {
     has_cloud_image=$(
         case "$distro" in
         redhat | centos | almalinux | rocky | oracle | fedora | debian | ubuntu | opensuse | anolis | openeuler) echo true ;;
-        netboot.xyz | alpine | dd | arch | gentoo | nixos | kali | windows) echo false ;;
+        alpine | dd | arch | gentoo | nixos | kali | windows) echo false ;;
         esac
     )
 
@@ -2316,7 +2193,7 @@ is_secure_boot_enabled() {
 }
 
 is_need_grub_extlinux() {
-    ! { is_netboot_xyz && is_efi; }
+    return 0
 }
 
 # 只有 linux bios 是用本机的 grub/extlinux
@@ -2861,19 +2738,11 @@ install_grub_linux_efi() {
         # fedora 43 efi 在 vultr 无法引导 debain 9/10 netboot
         fedora_ver=$(get_latest_distro_releasever fedora)
 
-        if is_in_china; then
-            mirror=https://mirror.nju.edu.cn/fedora
-        else
-            mirror=https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux
-        fi
+        mirror=https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux
 
         curl -Lo $tmp/$grub_efi $mirror/releases/$fedora_ver/Everything/$basearch/os/EFI/BOOT/$grub_efi
     else
-        if is_in_china; then
-            mirror=https://mirror.nju.edu.cn/opensuse
-        else
-            mirror=https://downloadcontentcdn.opensuse.org
-        fi
+        mirror=https://downloadcontentcdn.opensuse.org
 
         [ "$basearch" = x86_64 ] && ports='' || ports=/ports/$basearch
 
@@ -2889,7 +2758,7 @@ download_and_extract_apk() {
     local extract_dir=$3
 
     install_pkg tar xz
-    is_in_china && mirror=http://mirror.nju.edu.cn/alpine || mirror=https://dl-cdn.alpinelinux.org/alpine
+    mirror=https://dl-cdn.alpinelinux.org/alpine
     package_apk=$(curl -L $mirror/v$alpine_ver/main/$basearch/ | grep -oP "$package-[^-]*-[^-]*\.apk" | sort -u)
     if ! [ "$(wc -l <<<"$package_apk")" -eq 1 ]; then
         error_and_exit "find no/multi apks."
@@ -2907,8 +2776,7 @@ install_grub_win() {
     grub_ver=2.06
     # ftpmirror.gnu.org 是 geoip 重定向，不是 cdn
     # 有可能重定义到一个拉黑了部分 IP 的服务器
-    is_in_china && grub_url=https://mirror.nju.edu.cn/gnu/grub/grub-$grub_ver-for-windows.zip ||
-        grub_url=https://mirrors.kernel.org/gnu/grub/grub-$grub_ver-for-windows.zip
+    grub_url=https://mirrors.kernel.org/gnu/grub/grub-$grub_ver-for-windows.zip
     curl -Lo $tmp/grub.zip $grub_url
     # unzip -qo $tmp/grub.zip
     7z x $tmp/grub.zip -o$tmp -r -y -xr!i386-efi -xr!locale -xr!themes -bso0
@@ -2959,8 +2827,7 @@ install_grub_win() {
         # 解决方法2 生成少于64K的 g2ldr + 动态模块
         if false; then
             # g2ldr.mbr
-            # 部分国内机无法访问 ftp.cn.debian.org
-            is_in_china && host=mirror.nju.edu.cn || host=deb.debian.org
+            host=deb.debian.org
             curl -LO http://$host/debian/tools/win32-loader/stable/win32-loader.exe
             7z x win32-loader.exe 'g2ldr.mbr' -o$tmp/win32-loader -r -y -bso0
             find $tmp/win32-loader -name 'g2ldr.mbr' -exec cp {} /cygdrive/$c/ \;
@@ -3346,10 +3213,6 @@ EOF
     # 因此改成在这里下载
     curl -LO "$confhome/get-xda.sh"
     curl -LO "$confhome/ttys.sh"
-    if [ -n "$frpc_config" ]; then
-        curl -LO "$confhome/get-frpc-url.sh"
-        curl -LO "$confhome/frpc.service"
-    fi
 
     # 可以节省一点内存？
     echo 'export DEBCONF_DROP_TRANSLATIONS=1' |
@@ -3581,15 +3444,14 @@ get_ip_conf_cmd() {
     collect_netconf >&2
 
     sh=/initrd-network.sh
-    # 第6个参数为保留参数（原 is_in_china，已废弃，传 false 以保持兼容）
     if is_found_ipv4_netconf && is_found_ipv6_netconf && [ "$ipv4_mac" = "$ipv6_mac" ]; then
-        echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway' 'false'"
+        echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway'"
     else
         if is_found_ipv4_netconf; then
-            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' '' 'false'"
+            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' ''"
         fi
         if is_found_ipv6_netconf; then
-            echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway' 'false'"
+            echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway'"
         fi
     fi
 }
@@ -3733,9 +3595,6 @@ This script is outdated, please download reinstall.sh again.
         cat <<<"$ssh_keys" >$initrd_dir/configs/ssh_keys
     else
         save_password $initrd_dir/configs
-    fi
-    if [ -n "$frpc_config" ]; then
-        cat "$frpc_config" >$initrd_dir/configs/frpc.toml
     fi
 
     if is_distro_like_debian $nextos_distro; then
@@ -3897,7 +3756,7 @@ else
 fi
 
 long_opts=
-for o in ci installer debug minimal allow-ping force-cn help \
+for o in ci installer debug minimal allow-ping help \
     add-driver: \
     hold: sleep: \
     iso: \
@@ -3912,7 +3771,6 @@ for o in ci installer debug minimal allow-ping force-cn help \
     web-port: http-port: \
     allow-ping: \
     commit: \
-    frpc-conf: frpc-config: frpc-toml: \
     force-boot-mode: \
     force-old-windows-setup:; do
     [ -n "$long_opts" ] && long_opts+=,
@@ -3925,7 +3783,6 @@ if ! opts=$(getopt -n $0 -o "h,x" --long "$long_opts" -- "$@"); then
 fi
 
 # /tmp 挂载在内存的话，可能不够空间
-# 处理 --frpc--toml 时会下载文件，因此在处理参数前就创建临时目录
 tmp=/reinstall-tmp
 mkdir_clear "$tmp"
 
@@ -3962,40 +3819,11 @@ while true; do
         allow_ping=1
         shift
         ;;
-    --force-cn)
-        # 仅为了方便测试
-        force_cn=1
-        shift
-        ;;
     --hold | --sleep)
         if ! { [ "$2" = 0 ] || [ "$2" = 1 ] || [ "$2" = 2 ]; }; then
             error_and_exit "Invalid $1 value: $2"
         fi
         hold=$2
-        shift 2
-        ;;
-    --frpc-conf | --frpc-config | --frpc-toml)
-        [ -n "$2" ] || error_and_exit "Need value for $1"
-
-        case "$(to_lower <<<"$2")" in
-        http://* | https://*)
-            frpc_config_url=$2
-            frpc_config=$tmp/frpc_config
-            if ! curl -L "$frpc_config_url" -o "$frpc_config"; then
-                error_and_exit "Can't get frpc config from $frpc_config_url"
-            fi
-            ;;
-        *)
-            # windows 路径转换
-            if ! { frpc_config=$(get_unix_path "$2") && [ -f "$frpc_config" ]; }; then
-                error_and_exit "File not exists: $2"
-            fi
-            ;;
-        esac
-
-        # 转为绝对路径
-        frpc_config=$(readlink -f "$frpc_config")
-
         shift 2
         ;;
     --force-boot-mode)
@@ -4181,7 +4009,7 @@ if is_secure_boot_enabled; then
 fi
 
 # 密码
-if ! is_netboot_xyz && [ -z "$ssh_keys" ] && [ -z "$password" ]; then
+if [ -z "$ssh_keys" ] && [ -z "$password" ]; then
     if is_use_dd; then
         show_dd_password_tips
     fi
@@ -4194,7 +4022,7 @@ install_pkg curl grep
 # 强制忽略/强制添加 --ci 参数
 # debian 不强制忽略 ci 留作测试
 case "$distro" in
-dd | windows | netboot.xyz | kali | alpine | arch | gentoo | aosc | nixos | fnos)
+dd | windows | kali | alpine | arch | gentoo | aosc | nixos | fnos)
     if is_use_cloud_image; then
         echo "ignored --ci"
         unset cloud_image
@@ -4275,13 +4103,12 @@ check_ram
 # el7 x86_64 >=1g
 # el7 aarch64 >=1.5g
 # el8/9/fedora 任何架构 >=2g
-if is_netboot_xyz ||
-    { ! is_use_cloud_image && {
-        [ "$distro" = "alpine" ] || is_distro_like_debian ||
-            { is_distro_like_redhat && [ $releasever -eq 7 ] && [ $ram_size -ge 1024 ] && [ $basearch = "x86_64" ]; } ||
-            { is_distro_like_redhat && [ $releasever -eq 7 ] && [ $ram_size -ge 1536 ] && [ $basearch = "aarch64" ]; } ||
-            { is_distro_like_redhat && [ $releasever -ge 8 ] && [ $ram_size -ge 2048 ]; }
-    }; }; then
+if ! is_use_cloud_image && {
+    [ "$distro" = "alpine" ] || is_distro_like_debian ||
+        { is_distro_like_redhat && [ $releasever -eq 7 ] && [ $ram_size -ge 1024 ] && [ $basearch = "x86_64" ]; } ||
+        { is_distro_like_redhat && [ $releasever -eq 7 ] && [ $ram_size -ge 1536 ] && [ $basearch = "aarch64" ]; } ||
+        { is_distro_like_redhat && [ $releasever -ge 8 ] && [ $ram_size -ge 2048 ]; }
+}; then
     setos nextos $distro $releasever
 else
     # alpine 作为中间系统时，使用最新版
@@ -4291,8 +4118,6 @@ else
 fi
 
 # 删除之前的条目
-# 防止第一次运行 netboot.xyz，第二次运行其他，但还是进入 netboot.xyz
-# 防止第一次运行其他，第二次运行 netboot.xyz，但还有第一次的菜单
 # bios 无论什么情况都用到 grub，所以不用处理
 if is_efi; then
     if is_in_windows; then
@@ -4320,27 +4145,13 @@ if [ -f /etc/default/kexec ]; then
     sed -i 's/LOAD_KEXEC=true/LOAD_KEXEC=false/' /etc/default/kexec
 fi
 
-# 下载 netboot.xyz / 内核
+# 下载 nextos 内核
 # shellcheck disable=SC2154
-if is_netboot_xyz; then
-    if is_efi; then
-        curl -Lo /netboot.xyz.efi $nextos_efi
-        if is_in_windows; then
-            add_efi_entry_in_windows /netboot.xyz.efi
-        else
-            add_efi_entry_in_linux /netboot.xyz.efi
-        fi
-    else
-        curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
-    fi
-else
-    # 下载 nextos 内核
-    info download vmlnuz and initrd
-    curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
-    curl -Lo /reinstall-initrd $nextos_initrd
-    if is_use_firmware; then
-        curl -Lo /reinstall-firmware $nextos_firmware
-    fi
+info download vmlnuz and initrd
+curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
+curl -Lo /reinstall-initrd $nextos_initrd
+if is_use_firmware; then
+    curl -Lo /reinstall-firmware $nextos_firmware
 fi
 
 # 修改 alpine debian kali initrd
@@ -4348,7 +4159,7 @@ if [ "$nextos_distro" = alpine ] || is_distro_like_debian "$nextos_distro"; then
     mod_initrd
 fi
 
-# 将内核/netboot.xyz.lkrn 放到正确的位置
+# 将内核放到正确的位置
 if false && is_need_grub_extlinux; then
     if is_in_windows; then
         cp -f /reinstall-vmlinuz /cygdrive/$c/
@@ -4495,24 +4306,17 @@ if is_need_grub_extlinux; then
         linux_cmd=LINUX
         initrd_cmd=INITRD
     else
-        if is_netboot_xyz; then
-            linux_cmd=linux16
-            initrd_cmd=initrd16
-        else
-            linux_cmd="linux$efi"
-            initrd_cmd="initrd$efi"
-        fi
+        linux_cmd="linux$efi"
+        initrd_cmd="initrd$efi"
     fi
 
     # 设置 cmdlind initrds
-    if ! is_netboot_xyz; then
-        find_main_disk
-        build_cmdline
+    find_main_disk
+    build_cmdline
 
-        initrds="$initrd"
-        if is_use_firmware; then
-            initrds+=" $firmware"
-        fi
+    initrds="$initrd"
+    if is_use_firmware; then
+        initrds+=" $firmware"
     fi
 
     if is_use_local_extlinux; then
@@ -4618,7 +4422,6 @@ echo "$distro $releasever"
 
 case "$distro" in
 windows) username=administrator ;;
-netboot.xyz) username= ;;
 dd | *) username=root ;;
 esac
 
@@ -4631,9 +4434,7 @@ if [ -n "$username" ]; then
     fi
 fi
 
-if is_netboot_xyz; then
-    echo 'Reboot to start netboot.xyz.'
-elif is_alpine_live; then
+if is_alpine_live; then
     echo 'Reboot to start Alpine Live OS.'
 elif is_use_dd; then
     show_dd_password_tips
