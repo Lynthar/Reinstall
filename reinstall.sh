@@ -2967,7 +2967,8 @@ mod_initrd_alpine() {
     # udhcpc:  bound
     # udhcpc6: deconfig
     # udhcpc6: bound
-    # shellcheck disable=SC2317
+    # 通过 get_function_content 间接调用
+    # shellcheck disable=SC2317,SC2329
     udhcpc() {
         if [ "$1" = deconfig ]; then
             return
