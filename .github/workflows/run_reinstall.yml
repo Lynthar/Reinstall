@@ -16,7 +16,9 @@ jobs:
         run: sudo bash reinstall.sh --debug --password 123@@@ dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
       - name: alpine
         run: sudo bash reinstall.sh --debug --password 123@@@ alpine
-      - name: debian cloud image
-        run: sudo bash reinstall.sh --debug --password 123@@@ debian --ci
-      - name: ubuntu cloud image
-        run: sudo bash reinstall.sh --debug --password 123@@@ ubuntu --ci
+      - name: debian
+        # debian/ubuntu are forced to cloud_image mode in reinstall.sh,
+        # passing --ci is redundant
+        run: sudo bash reinstall.sh --debug --password 123@@@ debian
+      - name: ubuntu
+        run: sudo bash reinstall.sh --debug --password 123@@@ ubuntu
