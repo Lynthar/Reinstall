@@ -11,7 +11,7 @@ jobs:
     name: 运行主程序
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: dd
         run: sudo bash reinstall.sh --debug --password 123@@@ dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
       - name: alpine
