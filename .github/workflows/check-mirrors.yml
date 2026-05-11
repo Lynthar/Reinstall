@@ -1,0 +1,75 @@
+name: check upstream mirror URLs
+on:
+  schedule:
+    # Mondays 06:00 UTC. GitHub may delay by up to ~15min under load.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+# Public-repo scheduled workflows auto-disable after 60 days without commits.
+# Any push or manual workflow_dispatch run re-activates them.
+
+permissions:
+  issues: write    # required by `gh issue create` on failure
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: probe URLs
+        id: probe
+        run: |
+          set +e
+          bash tests/check_mirrors.sh | tee /tmp/probe.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          {
+            echo 'log<<EOF'
+            cat /tmp/probe.log
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+          exit 0   # don't fail the job here; let the issue step report
+
+      - name: open issue on failure
+        if: steps.probe.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROBE_LOG: ${{ steps.probe.outputs.log }}
+        run: |
+          set -euo pipefail
+          title="mirror URL probe failed ($(date -u +%Y-%m-%d))"
+
+          # de-dup: skip if any open mirror-probe issue already exists
+          existing=$(gh issue list \
+            --state open \
+            --search 'in:title "mirror URL probe failed"' \
+            --json number --jq 'length')
+          if [ "$existing" -gt 0 ]; then
+            echo "open mirror-probe issue already exists; skipping"
+            exit 0
+          fi
+
+          gh issue create \
+            --title "$title" \
+            --body "$(cat <<EOF
+The weekly mirror URL check found one or more failing URLs.
+
+Probe log:
+\`\`\`
+$PROBE_LOG
+\`\`\`
+
+Likely causes:
+- upstream codename / directory layout changed (most common after a Debian/Ubuntu release)
+- a distro version reached EOL and was moved to archive
+- transient network issue (the probe retries 3× with 30s timeout — if this trips, it's persistent)
+
+Action: update \`tests/check_mirrors.sh\` and the corresponding \`setos_*\` paths in \`reinstall.sh\` to match the new layout, or drop the EOL version from \`verify_os_name\`.
+EOF
+)"
+
+      - name: fail job if probe failed
+        if: steps.probe.outputs.status != '0'
+        run: exit 1
