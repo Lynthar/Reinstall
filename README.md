@@ -1,5 +1,7 @@
 # reinstall
 
+[English](README.en.md) | 简体中文
+
 一键 DD 重装脚本（精简版）
 
 > 基于 [bin456789/reinstall](https://github.com/bin456789/reinstall) 重构，专注于 **VPS 上、非 GFW 网络环境** 的安全 / 隐私优先 DD 与云镜像安装
