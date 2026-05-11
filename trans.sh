@@ -2427,6 +2427,97 @@ download_qcow() {
         # 多线程下载
         download "$img" "$qcow_file"
     fi
+
+    verify_qcow
+}
+
+# 校验下载的 qcow2 镜像
+# Ubuntu: GPG 签名 + SHA256（防御 mirror 入侵）
+# Debian: SHA512 完整性（防止下载损坏；Debian Cloud team 不发布 GPG 签名）
+verify_qcow() {
+    case "$distro" in
+    ubuntu) verify_qcow_ubuntu ;;
+    debian) verify_qcow_debian ;;
+    esac
+}
+
+verify_qcow_ubuntu() {
+    info "Verify Ubuntu cloud image (GPG + SHA256)"
+    apk add gnupg
+
+    # shellcheck disable=SC2154
+    img_dir_url=$(dirname "$img")
+    img_basename=$(basename "$img")
+    expected_fpr=D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81
+
+    rm -rf /tmp/verify
+    mkdir -p /tmp/verify
+    download "$img_dir_url/SHA256SUMS"     /tmp/verify/SHA256SUMS
+    download "$img_dir_url/SHA256SUMS.gpg" /tmp/verify/SHA256SUMS.gpg
+    download "$confhome/keys/ubuntu-cloud.asc" /tmp/verify/ubuntu-cloud.asc
+
+    # 用临时 keyring，不污染系统
+    GNUPGHOME=/tmp/verify/gpg
+    mkdir -p "$GNUPGHOME"
+    chmod 700 "$GNUPGHOME"
+    export GNUPGHOME
+
+    gpg --batch --import /tmp/verify/ubuntu-cloud.asc
+
+    # 校验导入的 key 指纹是预期值（防御 confhome 上 key 被替换）
+    actual_fpr=$(gpg --batch --fingerprint --with-colons |
+        awk -F: '$1=="fpr" {print $10; exit}')
+    if [ "$actual_fpr" != "$expected_fpr" ]; then
+        error_and_exit "Ubuntu signing key fingerprint mismatch: got $actual_fpr, expected $expected_fpr"
+    fi
+
+    # 验证签名
+    if ! gpg --batch --verify /tmp/verify/SHA256SUMS.gpg /tmp/verify/SHA256SUMS 2>&1 |
+        grep -q "Good signature"; then
+        error_and_exit "GPG signature verification failed for Ubuntu SHA256SUMS"
+    fi
+    info false "GPG signature OK ($expected_fpr)"
+
+    # 在 SHA256SUMS 中查 hash
+    expected_hash=$(awk -v name="$img_basename" \
+        '$2 == "*"name || $2 == name {print $1; exit}' /tmp/verify/SHA256SUMS)
+    if [ -z "$expected_hash" ]; then
+        error_and_exit "$img_basename not listed in SHA256SUMS"
+    fi
+    actual_hash=$(sha256sum "$qcow_file" | awk '{print $1}')
+    if [ "$expected_hash" != "$actual_hash" ]; then
+        error_and_exit "SHA256 mismatch: expected $expected_hash, got $actual_hash"
+    fi
+    info false "SHA256 OK: $actual_hash"
+
+    unset GNUPGHOME
+    apk del gnupg
+    rm -rf /tmp/verify
+}
+
+verify_qcow_debian() {
+    info "Verify Debian cloud image (SHA512 integrity; upstream provides no GPG signature)"
+
+    # shellcheck disable=SC2154
+    img_dir_url=$(dirname "$img")
+    img_basename=$(basename "$img")
+
+    rm -rf /tmp/verify
+    mkdir -p /tmp/verify
+    download "$img_dir_url/SHA512SUMS" /tmp/verify/SHA512SUMS
+
+    expected_hash=$(awk -v name="$img_basename" \
+        '$2 == "*"name || $2 == name {print $1; exit}' /tmp/verify/SHA512SUMS)
+    if [ -z "$expected_hash" ]; then
+        error_and_exit "$img_basename not listed in SHA512SUMS"
+    fi
+    actual_hash=$(sha512sum "$qcow_file" | awk '{print $1}')
+    if [ "$expected_hash" != "$actual_hash" ]; then
+        error_and_exit "SHA512 mismatch: expected $expected_hash, got $actual_hash"
+    fi
+    info false "SHA512 OK: $actual_hash"
+
+    rm -rf /tmp/verify
 }
 
 connect_qcow() {
