@@ -269,27 +269,9 @@ is_use_cloud_image() {
     [ -n "$cloud_image" ] && [ "$cloud_image" = 1 ]
 }
 
-setup_nginx() {
-    apk add nginx
-    # shellcheck disable=SC2154
-    wget $confhome/logviewer.html -O /logviewer.html
-    wget $confhome/logviewer-nginx.conf -O /etc/nginx/http.d/default.conf
-
-    if [ -z "$web_port" ]; then
-        web_port=80
-    fi
-    sed -i "s/@WEB_PORT@/$web_port/gi" /etc/nginx/http.d/default.conf
-
-    # rc-service -q nginx start
-    if pgrep nginx >/dev/null; then
-        nginx -s reload
-    else
-        nginx
-    fi
-}
-
 setup_websocketd() {
     apk add websocketd
+    # shellcheck disable=SC2154
     wget $confhome/logviewer.html -O /tmp/index.html
     apk add coreutils
 
@@ -328,19 +310,10 @@ setup_web_if_enough_ram() {
         return
     fi
     total_ram=$(get_approximate_ram_size)
-    # 512内存才安装
+    # 内存 < 400M 时跳过，节省 alpine live OS 内存
     if [ "$total_ram" -ge 400 ]; then
-        # lighttpd 虽然运行占用内存少，但安装占用空间大
-        # setup_lighttpd
-        # setup_nginx
         setup_websocketd
     fi
-}
-
-setup_lighttpd() {
-    apk add lighttpd
-    ln -sf /reinstall.html /var/www/localhost/htdocs/index.html
-    rc-service -q lighttpd start
 }
 
 get_ttys() {
