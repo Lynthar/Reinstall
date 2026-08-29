@@ -1,28 +1,24 @@
-# reinstall
+# Reinstall
+
+[![license](https://img.shields.io/github/license/Lynthar/Reinstall)](LICENSE)
+[![shellcheck](https://img.shields.io/github/actions/workflow/status/Lynthar/Reinstall/shellcheck.yml?branch=main&label=shellcheck)](https://github.com/Lynthar/Reinstall/actions/workflows/shellcheck.yml)
+
+Privacy-first VPS reinstall script: DD any raw image, or Debian/Ubuntu cloud images and Alpine. UTC by default.
 
 English | [简体中文](README.md)
 
-One-shot DD reinstall script (slimmed fork)
+Reinstall a running VPS as something else. It rewrites the bootloader so the
+machine comes back up in a temporary Alpine, then installs the target system
+from there. **This erases disks** — back up first, and try it on a machine you
+can rebuild.
 
-> Reworked from [bin456789/reinstall](https://github.com/bin456789/reinstall), focused on **privacy- and security-first DD / cloud-image installation for VPSes outside the GFW**.
+Four targets: Debian 11/12/13, Ubuntu 20.04/22.04/24.04/25.10, Alpine
+3.20–3.23, and `dd` of any raw image (over `http(s)://` or a magnet link).
+Debian and Ubuntu go through official cloud images.
 
-## Design goals
+## Install
 
-- **Privacy first**: no IP geolocation by default; password not exposed via `ps` or shell history; downloads HTTPS-only
-- **Supply-chain pinning**: `confhome` is auto-pinned to a specific git commit SHA so the script can't drift mid-run if upstream changes
-- **Minimal scope**: only 4 install targets (dd / alpine / debian / ubuntu cloud image); ~44% less code than upstream
-
-## Requirements
-
-| Item | Required |
-|------|----------|
-| Host OS | any Linux distribution (or Cygwin on Windows) |
-| RAM | 256 MB+ |
-| Disk | depends on the target image |
-
-> **Not supported**: OpenVZ / LXC container virt, Secure Boot, networks behind the GFW
-
-## Download
+Nothing to install. Download the script and run it as root:
 
 ```bash
 curl -O https://raw.githubusercontent.com/Lynthar/Reinstall/main/reinstall.sh
@@ -30,128 +26,105 @@ curl -O https://raw.githubusercontent.com/Lynthar/Reinstall/main/reinstall.sh
 
 ## Usage
 
+```bash
+sudo bash reinstall.sh debian 12
+sudo bash reinstall.sh ubuntu 24.04 --minimal
+sudo bash reinstall.sh alpine 3.22
+sudo bash reinstall.sh dd --img "https://example.com/x.img.xz"
 ```
-./reinstall.sh debian   11|12|13
-                ubuntu   20.04|22.04|24.04|25.10 [--minimal]
-                alpine   3.20|3.21|3.22|3.23
-                dd       --img="https://xxx.com/yyy.zzz" (raw image stored in raw/vhd/tar/gz/xz/zst)
-```
 
-### DD an arbitrary raw image
-
-> **Warning**: this wipes **the entire disk** (all partitions) on the current system!
-
-Supported image formats:
-- `raw` and fixed-size `vhd`
-- compressed: `.gz` `.xz` `.zst` `.tar` `.tar.gz` `.tar.xz` `.tar.zstd`
+Leaving the version off picks the newest in that series. Prefer stdin for the
+password — `--password` lands in `ps` and history:
 
 ```bash
-bash reinstall.sh dd --img "https://example.com/xxx.xz"
+printf '%s' "$PW" | sudo bash reinstall.sh --password-stdin debian 12
 ```
 
-DD mode performs **no post-processing** on the image (no password / network / driver tweaking). Your image must be self-configured.
-
-### Install Debian / Ubuntu cloud image
+SSH keys can be a literal key, a file, an `https://` URL, or `github:username`:
 
 ```bash
-bash reinstall.sh debian 12
-bash reinstall.sh ubuntu 24.04 --minimal
+sudo bash reinstall.sh debian 12 --ssh-key github:yourname
 ```
 
-Downloads the official cloud-image qcow2 from `cdimage.debian.org` / `cloud-images.ubuntu.com`, then injects password, SSH key, network and timezone via cloud-init.
-
-**Image verification**:
-- **Ubuntu**: full GPG signature + SHA256 chain. `trans.sh` fetches `SHA256SUMS` + `SHA256SUMS.gpg` from the mirror, imports the UEC Image Automatic Signing Key from this repo's `keys/ubuntu-cloud.asc` (fingerprint `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81`), verifies the signature, then cross-checks the qcow2's SHA256 against the signed sums. Any failure aborts.
-- **Debian**: SHA512 integrity check only (catches download corruption). The Debian Cloud team currently publishes no GPG signature for cloud images (`SHA512SUMS.sign`/`.asc`/`.gpg` all 404), so **this does not defend against a compromised mirror** — that part is left to HTTPS transport security.
-
-### Install Alpine / boot into Alpine Live OS
+You can watch it work: a read-only log page runs on `127.0.0.1:80` by default,
+so forward a port over SSH and follow along:
 
 ```bash
-bash reinstall.sh alpine 3.22            # install Alpine
-bash reinstall.sh alpine --hold 1        # reboot into Live OS (rescue, backup, manual DD, ...)
+ssh -L 8080:127.0.0.1:80 root@your-server
 ```
 
-## Install-time options
+Other flags you'll reach for: `--timezone`, `--ssh-port`, `--web-port`,
+`--no-web`, `--hold 1|2` (stop in the installer environment, or don't reboot at
+the end), `--force-boot-mode bios|efi`, `-x` for debugging, and `--commit <SHA>`
+to pin the bootstrap scripts. There's no config file and no environment
+variables — everything is a flag. DNS is hardcoded to `1.1.1.1` and `8.8.8.8`,
+with Cloudflare and Google for IPv6.
 
-| Flag | Description |
-|------|-------------|
-| `--password PASSWORD` | Set the root / install-time SSH password **(visible in `ps` and shell history)** |
-| `--password-stdin` | Read password from stdin (recommended for automation) |
-| `--ssh-key KEY` | SSH public key (formats below) |
-| `--ssh-port PORT` | SSH port on the new system |
-| `--web-port PORT` | Install-time web log viewer port (default 80) |
-| `--web-public` | Bind web log viewer to `0.0.0.0` (default `127.0.0.1`, view via SSH port forward) |
-| `--no-web` | Disable the web log viewer entirely |
-| `--timezone TZ` | Set timezone explicitly, e.g. `Asia/Tokyo` (default `UTC`) |
-| `--detect-timezone` | Auto-detect via ipapi.co **(leaks your egress IP to a third party)** |
-| `--commit SHA` | Pin `confhome` to a specific git commit |
-| `--hold 1` | Reboot into the install environment but don't run the install |
-| `--hold 2` | Don't reboot after DD finishes; SSH back in and reboot manually |
+## Security
 
-### SSH key formats
+**Be clear about what is and isn't verified.** Ubuntu cloud images get GPG
+signature verification (with the key fingerprint cross-checked in the script)
+plus SHA256; Debian cloud images get SHA512 integrity checking. **`dd` mode
+verifies nothing** — the image's integrity is on you. The temporary Alpine
+kernel and initramfs aren't verified either.
 
-- `--ssh-key "ssh-rsa ..."`
-- `--ssh-key "ssh-ed25519 ..."`
-- `--ssh-key "ecdsa-sha2-nistp256/384/521 ..."`
-- `--ssh-key https://path/to/public_key`
-- `--ssh-key github:username`
-- `--ssh-key gitlab:username`
-- `--ssh-key /path/to/public_key`
+**The bootstrap is pinned to a commit.** At runtime the raw URL is resolved to a
+40-hex commit SHA before anything is fetched, and `--commit` lets you choose one.
 
-## Privacy model
+**Downloads are not strictly HTTPS end to end.** The temporary Alpine stage is
+fetched over plain HTTP — there's a comment explaining it works around clocks
+that aren't synced yet on some ARM instances — and `curl` is wrapped with
+`--insecure`, inherited from upstream. **If man-in-the-middle is in your threat
+model, know this going in.**
 
-| Behavior | Who sees what |
-|----------|---------------|
-| Image download | The mirror (`cdimage.debian.org` / `cloud-images.ubuntu.com` / `dl-cdn.alpinelinux.org` / your DD URL). Ubuntu downloads are GPG-verified + SHA256-checked; Debian is SHA512 integrity only (no upstream signature available) |
-| GitHub API call to resolve commit SHA | `api.github.com` (one request per run) |
-| Install-time log viewer (HTTP `:80`) | Bound to `127.0.0.1` by default — use `ssh -L 8080:127.0.0.1:80` to view; only `--web-public` exposes it to the internet |
-| `--detect-timezone` | `ipapi.co` sees your egress IP (off by default) |
-| **Password** | `--password ARG` ends up in `ps` and shell history; prefer `--password-stdin` |
+**Root login is enabled when it finishes.** With an SSH key, that key is written
+to `authorized_keys` and root key login is allowed; without one, a root password
+is set and password login is allowed. Tightening that should be your first move.
 
-## Watching install progress
+**`--ssh-key` accepts `http://` URLs**, which means the key can be swapped in
+transit. Use `https://`, `github:` or `gitlab:` instead.
 
-You can monitor the install via:
-- SSH (password is whatever you passed to `--password` or the random one printed at the end)
-- WebSocket live log: bound to `127.0.0.1:80` by default — use `ssh -L 8080:127.0.0.1:80 root@SERVER` then open `http://localhost:8080`. Use `--web-public` to expose publicly, or `--no-web` to disable
-- Provider VNC console
-- Serial console
+**The log page binds to `127.0.0.1` and has no authentication.**
+`--web-public` binds it to `0.0.0.0` and warns you; SSH port forwarding is the
+right answer.
 
-If the install errors out you can still SSH in and run `/trans.sh alpine` to drop into Alpine for manual recovery.
+**Privacy-first defaults.** The timezone is UTC unless you pass
+`--detect-timezone`, which hands your IP to a third-party service — the help text
+says so. Passwords are read with `read -s` without echo, and get filtered out of
+both the log and the web output.
 
-## Self-hosting the script
+## Limitations
 
-To use your own fork:
+- **Only those four targets.** CentOS, Rocky, Fedora, Arch, openSUSE, NixOS and
+  Windows all exit with an error. The script still *runs on* those systems,
+  Windows and Cygwin included — it just can't install them.
+- **x86_64 and aarch64 only**, and 32-bit x86 is treated as x86_64.
+- **Container virtualisation such as OpenVZ and LXC isn't supported**, and Secure
+  Boot has to be off.
+- **`dd` mode doesn't set passwords, configure networking or install drivers** —
+  the image has to arrive with a working configuration. It also **doesn't check
+  disk capacity** first.
+- **Network has to be auto-detectable** (IPv4 or IPv6 will do); if it can't work
+  out an address, it exits.
+- **`--minimal` only affects Ubuntu**, and is silently ignored for Debian.
+- **DD-ing a non-EFI image on an EFI machine asks for confirmation**, which will
+  hang an unattended run.
+- **No tags and no version numbers.** To pin a known-good state, use
+  `--commit <SHA>`.
 
-1. Fork this repo
-2. Change `confhome` at `reinstall.sh:7` to your raw URL
-3. Republish
+## Differences from upstream
 
-`confhome` is auto-pinned to the HEAD commit of `main` by default; users can override with `--commit SHA`.
+Upstream [bin456789/reinstall](https://github.com/bin456789/reinstall) supports
+far more — Windows, RHEL-family, traditional installers, netboot.xyz, mirror
+selection for networks inside China. I dropped all of that in exchange for
+scripts about half the length and privacy-first defaults: no IP geolocation, UTC
+unless you say otherwise, passwords kept out of `ps` and shell history, the
+bootstrap pinned to a commit SHA, and signature checks on cloud images.
 
-## Differences from upstream bin456789/reinstall
-
-**Removed**:
-- Windows-as-target install (`setos_windows`, `install_windows`, Windows driver injection)
-- Traditional Linux installers (debian-installer / RHEL anaconda)
-- All cloud-image support except Debian / Ubuntu (centos / almalinux / rocky / fedora / oracle / opensuse / arch / nixos / gentoo / aosc / fnos / kali / openeuler / opencloudos / anolis / redhat)
-- `netboot.xyz` network boot
-- `frpc` reverse-tunnel
-- China mirror sources + IP geolocation (`is_in_china`)
-- `--allow-ping` `--rdp-port` `--add-driver` `--installer` `--force-old-windows-setup` and other Windows flags
-
-**Changed defaults**:
-- Default timezone is `UTC`; no network probe unless `--detect-timezone`
-- Hardcoded international DNS in `initrd-network.sh`: `1.1.1.1` / `8.8.8.8`
-- `confhome` auto-pinned to commit SHA
-- `prompt_password` hides terminal input (`-s`)
-- Web log viewer bound to `127.0.0.1` by default (was `0.0.0.0`)
-- Cloud-image downloads now verified (Ubuntu GPG, Debian SHA512)
-- New flags: `--password-stdin` / `--timezone TZ` / `--detect-timezone` / `--web-public` / `--no-web`
+**If you're behind the GFW, or need Windows or a RHEL-family target, use
+upstream** — that's what it's for.
 
 ## License
 
-Distributed under the same license as the upstream project; see [LICENSE](LICENSE).
-
-## Credits
-
-- [bin456789/reinstall](https://github.com/bin456789/reinstall) — upstream project
+GNU General Public License v3.0 — see [LICENSE](LICENSE). Inherited from
+upstream [bin456789/reinstall](https://github.com/bin456789/reinstall).
