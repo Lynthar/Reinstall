@@ -54,21 +54,21 @@ jobs:
           gh issue create \
             --title "$title" \
             --body "$(cat <<EOF
-The weekly mirror URL check found one or more failing URLs.
+          The weekly mirror URL check found one or more failing URLs.
 
-Probe log:
-\`\`\`
-$PROBE_LOG
-\`\`\`
+          Probe log:
+          \`\`\`
+          $PROBE_LOG
+          \`\`\`
 
-Likely causes:
-- upstream codename / directory layout changed (most common after a Debian/Ubuntu release)
-- a distro version reached EOL and was moved to archive
-- transient network issue (the probe retries 3× with 30s timeout — if this trips, it's persistent)
+          Likely causes:
+          - upstream codename / directory layout changed (most common after a Debian/Ubuntu release)
+          - a distro version reached EOL and was moved to archive
+          - transient network issue (the probe retries 3× with 30s timeout — if this trips, it's persistent)
 
-Action: update \`tests/check_mirrors.sh\` and the corresponding \`setos_*\` paths in \`reinstall.sh\` to match the new layout, or drop the EOL version from \`verify_os_name\`.
-EOF
-)"
+          Action: update \`tests/check_mirrors.sh\` and the corresponding \`setos_*\` paths in \`reinstall.sh\` to match the new layout, or drop the EOL version from \`verify_os_name\`.
+          EOF
+          )"
 
       - name: fail job if probe failed
         if: steps.probe.outputs.status != '0'
