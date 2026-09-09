@@ -6,6 +6,10 @@ set -eE
 # 配置文件下载地址
 confhome=https://raw.githubusercontent.com/Lynthar/Reinstall/main
 
+# 所有下载默认校验 TLS 证书。--allow-insecure-bootstrap 把它设成 --insecure，
+# 那会让 trans.sh 与 keys/ubuntu-cloud.asc 都可被中间人替换
+insecure_opt=
+
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0005
 
@@ -66,6 +70,11 @@ Usage: ./reinstall.sh debian   11|12|13
                       [--timezone TZ]            (default: UTC)
                       [--detect-timezone]        (auto-detect via ipapi.co, leaks IP)
                       [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
+                      [--allow-insecure-bootstrap]
+                                                 (skip TLS certificate checks on every download.
+                                                  trans.sh and the Ubuntu signing key then become
+                                                  man-in-the-middle-able. For hosts with a broken
+                                                  CA store, such as 32-bit Cygwin.)
 
 Manual: https://github.com/Lynthar/Reinstall
 
@@ -138,11 +147,10 @@ curl() {
     show_url_in_args "$@" >&2
 
     # 添加 -f, --fail，不然 404 退出码也为0
-    # 32位 cygwin 已停止更新，证书可能有问题，先添加 --insecure
     # centos 7 curl 不支持 --retry-connrefused --retry-all-errors
     # 因此手动 retry
     for i in $(seq 5); do
-        if command curl --insecure --connect-timeout 10 -f "$@"; then
+        if command curl $insecure_opt --connect-timeout 10 -f "$@"; then
             return
         else
             ret=$?
@@ -336,7 +344,7 @@ test_url_real() {
     # ${PIPESTATUS[n]} 表示第n个管道的返回值
     echo $url
     for i in $(seq 5 -1 0); do
-        if command curl --insecure --connect-timeout 10 -Lfr 0-1048575 "$url" \
+        if command curl $insecure_opt --connect-timeout 10 -Lfr 0-1048575 "$url" \
             1> >(exec head -c 1048576 >$tmp_file) \
             2> >(exec grep -v 'curl: (23)' >&2); then
             break
@@ -2246,6 +2254,7 @@ fi
 
 long_opts=
 for o in ci debug minimal help detect-timezone password-stdin web-public no-web \
+    allow-insecure-bootstrap \
     hold: sleep: \
     img: \
     passwd: password: \
@@ -2276,8 +2285,16 @@ while true; do
         usage_and_exit
         ;;
     --commit)
+        if ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
+            error_and_exit "Invalid $1 value: $2 (expected a 40-char lowercase commit SHA)"
+        fi
         commit=$2
         shift 2
+        ;;
+    --allow-insecure-bootstrap)
+        insecure_opt=--insecure
+        warn "TLS certificate verification is off for every download, including trans.sh and keys/ubuntu-cloud.asc."
+        shift
         ;;
     --timezone)
         [ -n "$2" ] || error_and_exit "Need value for $1"
@@ -2514,16 +2531,15 @@ if [[ "$confhome" =~ ^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+$ ]];
     branch=$(echo "$confhome" | cut -d/ -f6)
 
     if [ -z "$commit" ]; then
-        commit=$(curl -L "https://api.github.com/repos/$repo/git/refs/heads/$branch" 2>/dev/null |
+        commit=$(curl -L "https://api.github.com/repos/$repo/git/refs/heads/$branch" |
             grep '"sha"' | grep -Eo '[0-9a-f]{40}' | head -1)
+        # 退回可变分支等于没有钉版，而制造这次失败正是中间人最省力的一步
+        [ -n "$commit" ] ||
+            error_and_exit "Could not resolve $branch to a commit SHA. Retry, or pass --commit SHA."
     fi
 
-    if [ -n "$commit" ]; then
-        confhome="https://raw.githubusercontent.com/$repo/$commit"
-        info false "Pinned confhome to $confhome"
-    else
-        warn "Could not resolve commit SHA, falling back to branch $branch"
-    fi
+    confhome="https://raw.githubusercontent.com/$repo/$commit"
+    info false "Pinned confhome to $confhome"
 fi
 
 # 时区设置：

@@ -1548,7 +1548,48 @@ create_part() {
 
     # xda*1 星号用于 nvme0n1p1 的字母 p
     # shellcheck disable=SC2154
-    if [ "$distro" = alpine ]; then
+    if is_use_cloud_image; then
+        installer_part_size="$(get_cloud_image_part_size)"
+        if [ "$distro" = ubuntu ]; then
+            # install_qcow_by_copy 写死 1=efi 2=os 3=installer
+            # 三种固件/容量下编号必须一致，所以一律 gpt，且 os 分区留给目标系统自己的 mkfs
+            if is_efi; then
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' fat32 1MiB 101MiB \
+                    mkpart '" "' ext4 101MiB -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 esp on
+                update_part
+
+                mkfs.fat -n efi /dev/$xda*1           #1 efi
+                echo                                  #2 os 用目标系统的格式化工具
+                mkfs.ext4 -F -L installer /dev/$xda*3 #3 installer
+            else
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' ext4 1MiB 2MiB \
+                    mkpart '" "' ext4 2MiB -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 bios_grub on
+                update_part
+
+                echo                                  #1 bios_boot
+                echo                                  #2 os 用目标系统的格式化工具
+                mkfs.ext4 -F -L installer /dev/$xda*3 #3 installer
+            fi
+        else
+            # debian 把整个 qcow2 dd 到硬盘，分区表随之被覆盖，只需要 os + installer
+            parted /dev/$xda -s -- \
+                mklabel gpt \
+                mkpart '" "' ext4 1MiB -$installer_part_size \
+                mkpart '" "' ext4 -$installer_part_size 100%
+            update_part
+
+            mkfs.ext4 -F -L os /dev/$xda*1        #1 os
+            mkfs.ext4 -F -L installer /dev/$xda*2 #2 installer
+        fi
+    else
         # alpine 本身关闭了 64bit ext4
         # https://gitlab.alpinelinux.org/alpine/alpine-conf/-/blob/3.18.1/setup-disk.in?ref_type=tags#L908
         # 而且 alpine 的 extlinux 不兼容 64bit ext4
@@ -1585,66 +1626,6 @@ create_part() {
 
             mkfs.ext4 -F $ext4_opts /dev/$xda*1 #1 os
         fi
-    else
-        # 安装红帽系或ubuntu
-        # 对于红帽系是临时分区表，安装时除了 installer 分区，其他分区会重建为默认的大小
-        # 对于ubuntu是最终分区表，因为 ubuntu 的安装器不能调整个别分区，只能重建整个分区表
-        # installer 2g分区用fat格式刚好塞得下ubuntu-22.04.3 iso，而ext4塞不下或者需要改参数
-        if [ "$distro" = ubuntu ]; then
-            if ! size_bytes=$(get_http_file_size "$iso"); then
-                # 默认值，假设 iso 3g
-                size_bytes=$((3 * 1024 * 1024 * 1024))
-            fi
-            installer_part_size="$(get_part_size_mb_for_file_size_b $size_bytes)MiB"
-        else
-            # redhat
-            installer_part_size=2GiB
-        fi
-
-        # centos 7 无法加载alpine格式化的ext4
-        # 要关闭这个属性
-        ext4_opts="-O ^metadata_csum"
-        apk add dosfstools
-
-        if is_efi; then
-            # efi
-            parted /dev/$xda -s -- \
-                mklabel gpt \
-                mkpart '" "' fat32 1MiB 1025MiB \
-                mkpart '" "' ext4 1025MiB -$installer_part_size \
-                mkpart '" "' ext4 -$installer_part_size 100% \
-                set 1 boot on
-            update_part
-
-            mkfs.fat -n efi /dev/$xda*1                      #1 efi
-            mkfs.ext4 -F -L os /dev/$xda*2                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #2 installer
-        elif is_xda_gt_2t; then
-            # bios > 2t
-            parted /dev/$xda -s -- \
-                mklabel gpt \
-                mkpart '" "' ext4 1MiB 2MiB \
-                mkpart '" "' ext4 2MiB -$installer_part_size \
-                mkpart '" "' ext4 -$installer_part_size 100% \
-                set 1 bios_grub on
-            update_part
-
-            echo                                             #1 bios_boot
-            mkfs.ext4 -F -L os /dev/$xda*2                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #3 installer
-        else
-            # bios
-            parted /dev/$xda -s -- \
-                mklabel msdos \
-                mkpart primary ext4 1MiB -$installer_part_size \
-                mkpart primary ext4 -$installer_part_size 100% \
-                set 1 boot on
-            update_part
-
-            mkfs.ext4 -F -L os /dev/$xda*1                   #1 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*2 #2 installer
-        fi
-        update_part
     fi
 
     update_part
@@ -3375,31 +3356,11 @@ get_ubuntu_kernel_flavor() {
     # https://github.com/systemd/systemd/blob/main/src/basic/virt.c
     # https://github.com/canonical/cloud-init/blob/main/tools/ds-identify
     # http://git.annexia.org/?p=virt-what.git;a=blob;f=virt-what.in;hb=HEAD
-    if [ "$releasever" = 16.04 ]; then
-        if is_virt; then
-            echo virtual-hwe-$releasever
-        else
-            echo generic-hwe-$releasever
-        fi
+    is_ubuntu_lts && suffix=-hwe-$releasever || suffix=
+    if is_virt; then
+        echo virtual$suffix
     else
-        # 这里有坑
-        # $(get_cloud_vendor) 调用了 cache_dmi_and_virt
-        # 但是 $(get_cloud_vendor) 运行在 subshell 里面
-        # subshell 运行结束后里面的变量就消失了
-        # 因此先运行 cache_dmi_and_virt
-        cache_dmi_and_virt
-        vendor="$(get_cloud_vendor)"
-        case "$vendor" in
-        aws | gcp | oracle | azure | ibm) echo $vendor ;;
-        *)
-            is_ubuntu_lts && suffix=-hwe-$releasever || suffix=
-            if is_virt; then
-                echo virtual$suffix
-            else
-                echo generic$suffix
-            fi
-            ;;
-        esac
+        echo generic$suffix
     fi
 }
 
