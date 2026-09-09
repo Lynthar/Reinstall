@@ -30,6 +30,7 @@ jobs:
           shellcheck fix-eth-name.initd
           shellcheck tests/check_undefined_calls.sh
           shellcheck tests/check_part_layout.sh
+          shellcheck tests/check_qcow_verify.sh
       - name: Check for calls to undefined functions
         run: |
           bash tests/check_undefined_calls.sh \

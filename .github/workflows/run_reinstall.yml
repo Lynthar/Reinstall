@@ -6,7 +6,17 @@ on:
       - "reinstall.sh"
       - "trans.sh"
       - ".github/workflows/run_reinstall.yml"
+      - "tests/check_part_layout.sh"
+      - "tests/check_qcow_verify.sh"
 jobs:
+  tests:
+    name: 分区角色与镜像验签
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y parted dosfstools
+      - run: sudo bash tests/check_part_layout.sh
+      - run: bash tests/check_qcow_verify.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest

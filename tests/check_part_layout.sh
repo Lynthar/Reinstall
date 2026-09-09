@@ -91,6 +91,8 @@ run_case() {
         echo "    FAIL create_part exited non-zero" >&2
         failures=$((failures + 1))
     fi
+    # mkfs closing the device makes udev re-read the table; read labels only once it settles.
+    udevadm settle 2>/dev/null || true
 }
 
 end_case() {

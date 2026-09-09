@@ -63,8 +63,10 @@ with Cloudflare and Google for IPv6.
 ## Security
 
 **Be clear about what is and isn't verified.** Ubuntu cloud images get GPG
-signature verification (with the key fingerprint cross-checked in the script)
-plus SHA256; Debian cloud images get SHA512 integrity checking. **`dd` mode
+signature verification (the signature must come from the key pinned in the
+script) plus SHA256; Debian cloud images get SHA512 integrity checking. The
+signed checksums are fetched and verified before the disk is touched; only the
+downloaded image's hash is compared afterwards. **`dd` mode
 verifies nothing** — the image's integrity is on you. The temporary Alpine
 kernel and initramfs aren't verified either.
 
