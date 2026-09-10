@@ -23,12 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: dd
-        run: sudo bash reinstall.sh --debug --password 123@@@ dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
       - name: alpine
-        run: sudo bash reinstall.sh --debug --password 123@@@ alpine
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} alpine
       - name: debian
         # debian/ubuntu are forced to cloud_image mode in reinstall.sh,
         # passing --ci is redundant
-        run: sudo bash reinstall.sh --debug --password 123@@@ debian
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} debian
       - name: ubuntu
-        run: sudo bash reinstall.sh --debug --password 123@@@ ubuntu
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} ubuntu
