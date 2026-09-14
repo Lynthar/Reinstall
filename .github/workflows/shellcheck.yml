@@ -23,8 +23,6 @@ jobs:
           shellcheck trans.sh
           shellcheck initrd-network.sh
           shellcheck fix-eth-name.sh
-          shellcheck cloud-init-fix-onlink.sh
-          shellcheck get-xda.sh
           shellcheck ttys.sh
           shellcheck fix-eth-name.initd
           shellcheck tests/check_undefined_calls.sh
@@ -35,5 +33,4 @@ jobs:
         run: |
           bash tests/check_undefined_calls.sh \
             reinstall.sh trans.sh initrd-network.sh fix-eth-name.sh \
-            cloud-init-fix-onlink.sh get-xda.sh ttys.sh \
-            fix-eth-name.initd
+            ttys.sh fix-eth-name.initd

@@ -206,15 +206,6 @@ is_os_in_btrfs() {
     mount | grep -q ' on / type btrfs '
 }
 
-is_os_in_subvol() {
-    subvol=$(awk '($2=="/") { print $i }' /proc/mounts | grep -o 'subvol=[^ ]*' | cut -d= -f2)
-    [ "$subvol" != / ]
-}
-
-get_os_part() {
-    awk '($2=="/") { print $1 }' /proc/mounts
-}
-
 umount_all() {
     # windows defender 打开时，cygwin 运行 mount 很慢，但 cat /proc/mounts 很快
     if mount_lists=$(mount | grep -w "on $1" | awk '{print $3}' | grep .); then
@@ -227,25 +218,6 @@ umount_all() {
     fi
 }
 
-cp_to_btrfs_root() {
-    mount_dir=$tmp/reinstall-btrfs-root
-    if ! grep -q $mount_dir /proc/mounts; then
-        mkdir -p $mount_dir
-        mount "$(get_os_part)" $mount_dir -t btrfs -o subvol=/
-    fi
-    cp -rf "$@" "$mount_dir"
-}
-
-is_host_has_ipv4_and_ipv6() {
-    host=$1
-
-    install_pkg dig
-    # dig会显示cname结果，cname结果以.结尾，grep -v '\.$' 用于去除 cname 结果
-    res=$(dig +short $host A $host AAAA | grep -v '\.$')
-    # 有.表示有ipv4地址，有:表示有ipv6地址
-    grep -q \. <<<$res && grep -q : <<<$res
-}
-
 is_alpine_live() {
     [ "$distro" = alpine ] && [ "$hold" = 1 ]
 }
@@ -256,10 +228,6 @@ is_digit() {
 
 is_port_valid() {
     is_digit "$1" && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
-}
-
-get_host_by_url() {
-    cut -d/ -f3 <<<$1
 }
 
 get_function() {
@@ -303,10 +271,6 @@ insert_into_file() {
 
 test_url() {
     test_url_real false "$@"
-}
-
-test_url_grace() {
-    test_url_real true "$@"
 }
 
 test_url_real() {
@@ -642,34 +606,6 @@ is_virt() {
         echo "VM: $_is_virt"
     fi
     $_is_virt
-}
-
-is_cpu_supports_x86_64_v3() {
-    # 用 ld.so/cpuid/coreinfo.exe 更准确
-    # centos 7 /usr/lib64/ld-linux-x86-64.so.2 没有 --help
-    # alpine gcompat /lib/ld-linux-x86-64.so.2 没有 --help
-
-    # https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels
-    # https://learn.microsoft.com/sysinternals/downloads/coreinfo
-
-    # abm = popcnt + lzcnt
-    # /proc/cpuinfo 不显示 lzcnt, 可用 abm 代替，但 cygwin 也不显示 abm
-    # /proc/cpuinfo 不显示 osxsave, 故用 xsave 代替
-
-    need_flags="avx avx2 bmi1 bmi2 f16c fma movbe xsave"
-    had_flags=$(grep -m 1 ^flags /proc/cpuinfo | awk -F': ' '{print $2}')
-
-    for flag in $need_flags; do
-        if ! grep -qw $flag <<<"$had_flags"; then
-            return 1
-        fi
-    done
-}
-
-assert_cpu_supports_x86_64_v3() {
-    if ! is_cpu_supports_x86_64_v3; then
-        error_and_exit "Could not install $distro $releasever because the CPU does not support x86-64-v3."
-    fi
 }
 
 setos() {
@@ -1213,11 +1149,6 @@ del_empty_lines() {
 
 del_comment_lines() {
     sed '/^[[:space:]]*#/d'
-}
-
-trim() {
-    # sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//'
-    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
 prompt_password() {
