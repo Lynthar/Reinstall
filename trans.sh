@@ -1042,10 +1042,6 @@ newline_to_comma() {
     tr '\n' ','
 }
 
-space_to_newline() {
-    sed 's/ /\n/g'
-}
-
 trim() {
     sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
@@ -1810,47 +1806,6 @@ clear_machine_id() {
     # https://build.opensuse.org/projects/Virtualization:Appliances:Images:openSUSE-Leap-15.5/packages/kiwi-templates-Minimal/files/config.sh?expand=1
     rm -f $os_dir/var/lib/systemd/random-seed
 }
-
-# 注意 anolis 7 有这个文件，可能干扰我们的配置?
-# /etc/cloud/cloud.cfg.d/aliyun_cloud.cfg -> /sys/firmware/qemu_fw_cfg/by_name/etc/cloud-init/vendor-data/raw
-download_cloud_init_config() {
-    os_dir=$1
-    recognize_static6=$2
-    recognize_ipv6_types=$3
-
-    ci_file=$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg
-    download $confhome/cloud-init.yaml $ci_file
-    # 删除注释行，除了第一行
-    sed -i '1!{/^[[:space:]]*#/d}' $ci_file
-
-    # 修改密码
-    # 不能用 sed 替换，因为含有特殊字符
-    content=$(cat $ci_file)
-    echo "${content//@PASSWORD@/$(get_password_linux_sha512)}" >$ci_file
-
-    # 修改时区
-    sed -i "s/@TIMEZONE@/${timezone:-UTC}/g" $ci_file
-
-    # 修改 ssh 端口
-    if is_need_change_ssh_port; then
-        sed -i "s/@SSH_PORT@/$ssh_port/g" $ci_file
-    else
-        sed -i "/@SSH_PORT@/d" $ci_file
-    fi
-
-    # swapfile
-    # 如果分区表中已经有swapfile就跳过，例如arch
-    if ! grep -w swap $os_dir/etc/fstab; then
-        cat <<EOF >>$ci_file
-swap:
-  filename: /swapfile
-  size: auto
-EOF
-    fi
-
-    create_cloud_init_network_config "$ci_file" "$recognize_static6" "$recognize_ipv6_types"
-}
-
 
 get_axx64() {
     case "$(uname -m)" in

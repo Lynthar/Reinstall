@@ -26,7 +26,6 @@ jobs:
           shellcheck cloud-init-fix-onlink.sh
           shellcheck get-xda.sh
           shellcheck ttys.sh
-          shellcheck resize.sh
           shellcheck fix-eth-name.initd
           shellcheck tests/check_undefined_calls.sh
           shellcheck tests/check_part_layout.sh
@@ -36,5 +35,5 @@ jobs:
         run: |
           bash tests/check_undefined_calls.sh \
             reinstall.sh trans.sh initrd-network.sh fix-eth-name.sh \
-            cloud-init-fix-onlink.sh get-xda.sh ttys.sh resize.sh \
+            cloud-init-fix-onlink.sh get-xda.sh ttys.sh \
             fix-eth-name.initd

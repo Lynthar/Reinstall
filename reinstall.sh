@@ -190,10 +190,6 @@ is_in_windows() {
     [ "$(uname -o)" = Cygwin ] || [ "$(uname -o)" = Msys ]
 }
 
-is_in_alpine() {
-    [ -f /etc/alpine-release ]
-}
-
 is_use_cloud_image() {
     [ -n "$cloud_image" ] && [ "$cloud_image" = 1 ]
 }
@@ -252,15 +248,6 @@ is_host_has_ipv4_and_ipv6() {
 
 is_alpine_live() {
     [ "$distro" = alpine ] && [ "$hold" = 1 ]
-}
-
-is_have_initrd() {
-    return 0
-}
-
-is_use_firmware() {
-    # 不再支持 debian-installer 模式，永远不需要 firmware
-    return 1
 }
 
 is_digit() {
@@ -655,12 +642,6 @@ is_virt() {
         echo "VM: $_is_virt"
     fi
     $_is_virt
-}
-
-is_absolute_path() {
-    # 检查路径是否以/开头
-    # 注意语法和 ash 不同
-    [[ "$1" = /* ]]
 }
 
 is_cpu_supports_x86_64_v3() {
@@ -2606,10 +2587,6 @@ info download vmlnuz and initrd
 curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
 # shellcheck disable=SC2154
 curl -Lo /reinstall-initrd $nextos_initrd
-if is_use_firmware; then
-    # shellcheck disable=SC2154
-    curl -Lo /reinstall-firmware $nextos_firmware
-fi
 
 # 修改 alpine initrd（nextos 永远是 alpine，dd 模式不进入这里）
 mod_initrd
@@ -2727,7 +2704,6 @@ if is_need_grub_extlinux; then
 
     vmlinuz=${dir}reinstall-vmlinuz
     initrd=${dir}reinstall-initrd
-    firmware=${dir}reinstall-firmware
 
     # 设置 linux initrd 命令
     # efi 现在统一用下载的 opensuse grub（install_grub_linux_efi），
@@ -2740,14 +2716,9 @@ if is_need_grub_extlinux; then
         initrd_cmd=initrd
     fi
 
-    # 设置 cmdlind initrds
+    # 设置 cmdline
     find_main_disk
     build_cmdline
-
-    initrds="$initrd"
-    if is_use_firmware; then
-        initrds+=" $firmware"
-    fi
 
     if is_use_local_extlinux; then
         info extlinux
@@ -2764,7 +2735,7 @@ TIMEOUT 5
 LABEL reinstall
   MENU LABEL $(get_entry_name)
   $linux_cmd $vmlinuz
-  $([ -n "$initrds" ] && echo "$initrd_cmd $initrds")
+  $initrd_cmd $initrd
   $([ -n "$cmdline" ] && echo "APPEND $cmdline")
 EOF
         # 设置重启引导项
@@ -2773,10 +2744,7 @@ EOF
         # 复制文件到 extlinux 工作目录
         if is_boot_in_separate_partition; then
             info "copying files to $extlinux_dir"
-            is_have_initrd && cp -f /reinstall-initrd $extlinux_dir
-            is_use_firmware && cp -f /reinstall-firmware $extlinux_dir
-            # 放最后，防止前两条返回非 0 而报错
-            cp -f /reinstall-vmlinuz $extlinux_dir
+            cp -f /reinstall-vmlinuz /reinstall-initrd $extlinux_dir
         fi
     else
         # cloudcone 从光驱的 grub 启动，再加载硬盘的 grub.cfg
@@ -2836,7 +2804,7 @@ menuentry "$(get_entry_name)" --unrestricted {
     # terminal_output console
     search --no-floppy --file --set=root $vmlinuz
     $linux_cmd $vmlinuz $cmdline
-    $([ -n "$initrds" ] && echo "$initrd_cmd $initrds")
+    $initrd_cmd $initrd
 }
 EOF
 
