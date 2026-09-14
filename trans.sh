@@ -1484,8 +1484,9 @@ dd_raw_with_extract() {
     # 用官方 wget，一来带进度条，二来自带重试功能
     apk add wget
 
+    # 管道默认只看最后一段的退出码：下载中途断开时 cat 照样返回 0，半张镜像会被当成 dd 成功
     # shellcheck disable=SC2154
-    if ! wget $img -O- | pipe_extract >/dev/$xda 2>/tmp/dd_stderr; then
+    if ! (set -o pipefail && wget $img -O- | pipe_extract >/dev/$xda 2>/tmp/dd_stderr); then
         # vhd 文件结尾有 512 字节额外信息，可以忽略
         if grep -iq 'No space' /tmp/dd_stderr; then
             apk add parted
@@ -2376,7 +2377,7 @@ download_qcow() {
         # 边下载边解压，单线程下载
         # 用官方 wget ，带进度条
         apk add wget
-        wget $img -O- | pipe_extract >$qcow_file
+        (set -o pipefail && wget $img -O- | pipe_extract >$qcow_file)
     else
         # 多线程下载
         download "$img" "$qcow_file"
@@ -3108,7 +3109,7 @@ dd_qcow() {
             # 用 pv
             apk add pv
             echo "Start DD Cloud Image..."
-            pv -f /dev/nbd0 | dd of=/dev/$xda bs=1M skip=1 seek=1 iflag=fullblock
+            (set -o pipefail && pv -f /dev/nbd0 | dd of=/dev/$xda bs=1M skip=1 seek=1 iflag=fullblock)
             ;;
         esac
 
