@@ -2,9 +2,50 @@
 # 探测 reinstall.sh 所有支持的 distro / version 组合实际下载链接是否可达。
 # Weekly 跑一次（.github/workflows/check-mirrors.yml）。
 #
-# 版本表跟 reinstall.sh:verify_os_name 同步。升级 reinstall.sh 后请也更新这里。
+# 版本与代号直接从 reinstall.sh 抽取（verify_os_name 的版本清单、setos_<distro> 的
+# codename case），不另抄一份；抽不到或对不上就在这里停下，不带着旧表去探。
 
 set -u
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+reinstall=$repo/reinstall.sh
+
+# Pulls one function out of reinstall.sh, closing brace included; nested
+# definitions are matched by their own indentation.
+extract_fn() {
+    awk -v name="$1" '
+        !found && match($0, "^ *" name "\\(\\) \\{$") {
+            found = 1
+            indent = substr($0, 1, index($0, name) - 1)
+        }
+        found { print }
+        found && $0 == indent "}" { exit }
+    ' "$reinstall" | grep . || {
+        echo "cannot extract $1() from reinstall.sh" >&2
+        exit 2
+    }
+}
+
+# Versions verify_os_name() accepts for a distro, one per line.
+versions_of() {
+    extract_fn verify_os_name | sed -n -E "s/^ *'$1 +([0-9.|]+)'.*/\\1/p" | tr '|' '\n' | grep . || {
+        echo "no version list for $1 in verify_os_name()" >&2
+        exit 2
+    }
+}
+
+# Codename setos_<distro>() maps a version to.
+codename_of() {
+    local v=${2//./\\.}
+    extract_fn "setos_$1" | sed -n -E "s/^ *$v\\) codename=([a-z]+) ;;.*/\\1/p" | grep . || {
+        echo "no codename for $1 $2 in setos_$1()" >&2
+        exit 2
+    }
+}
+
+alpine_versions=$(versions_of alpine) || exit
+debian_versions=$(versions_of debian) || exit
+ubuntu_versions=$(versions_of ubuntu) || exit
 
 failed=0
 failed_urls=""
@@ -28,25 +69,8 @@ probe() {
 $url"
 }
 
-debian_codename() {
-    case "$1" in
-    11) echo bullseye ;;
-    12) echo bookworm ;;
-    13) echo trixie ;;
-    esac
-}
-
-ubuntu_codename() {
-    case "$1" in
-    20.04) echo focal ;;
-    22.04) echo jammy ;;
-    24.04) echo noble ;;
-    25.10) echo questing ;;
-    esac
-}
-
 echo '=== Alpine (virt kernel; reinstall only runs in VMs) ==='
-for v in 3.20 3.21 3.22 3.23; do
+for v in $alpine_versions; do
     for arch in x86_64 aarch64; do
         probe "http://dl-cdn.alpinelinux.org/alpine/v$v/releases/$arch/netboot/vmlinuz-virt"
         probe "http://dl-cdn.alpinelinux.org/alpine/v$v/releases/$arch/netboot/initramfs-virt"
@@ -55,8 +79,8 @@ done
 
 echo
 echo '=== Debian cloud images ==='
-for v in 11 12 13; do
-    codename=$(debian_codename "$v")
+for v in $debian_versions; do
+    codename=$(codename_of debian "$v") || exit
     for arch in amd64 arm64; do
         probe "https://cdimage.debian.org/images/cloud/$codename/latest/debian-$v-nocloud-$arch.qcow2"
     done
@@ -65,8 +89,8 @@ done
 
 echo
 echo '=== Ubuntu cloud images (server) ==='
-for v in 20.04 22.04 24.04 25.10; do
-    codename=$(ubuntu_codename "$v")
+for v in $ubuntu_versions; do
+    codename=$(codename_of ubuntu "$v") || exit
     for arch in amd64 arm64; do
         probe "https://cloud-images.ubuntu.com/releases/$codename/release/ubuntu-$v-server-cloudimg-$arch.img"
     done
@@ -76,8 +100,8 @@ done
 
 echo
 echo '=== Ubuntu cloud images (minimal; arm64 only for 24+) ==='
-for v in 20.04 22.04 24.04 25.10; do
-    codename=$(ubuntu_codename "$v")
+for v in $ubuntu_versions; do
+    codename=$(codename_of ubuntu "$v") || exit
     probe "https://cloud-images.ubuntu.com/minimal/releases/$codename/release/ubuntu-$v-minimal-cloudimg-amd64.img"
     minor=${v%.*}
     if [ "$minor" -ge 24 ]; then
