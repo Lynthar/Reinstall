@@ -545,7 +545,8 @@ wmic() {
     fi
 
     if ! [ -f "$tmp/wmic.ps1" ]; then
-        curl -Lo "$tmp/wmic.ps1" "$confhome/wmic.ps1"
+        curl -Lo "$tmp/wmic.ps1" "$confhome/wmic.ps1" ||
+            error_and_exit "Failed to download wmic.ps1 from $confhome"
     fi
 
     # shellcheck disable=SC2046
