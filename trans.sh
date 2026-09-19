@@ -1152,7 +1152,7 @@ install_alpine() {
     chroot /os setup-timezone -i "${timezone:-UTC}"
     # 3.21 默认是 chrony
     # 3.22 默认是 busybox ntp
-    printf '\n' | chroot /os setup-ntp || true
+    printf '\n' | chroot /os setup-ntp || warn "setup-ntp failed; the installed system has no NTP client configured"
 
     # 设置公钥
     if is_need_set_ssh_keys; then
@@ -3095,12 +3095,16 @@ sync_time() {
     # HTTP Date 回退（不强制 https；alpine apk 仓库默认 http）
     warn "NTP sync failed, falling back to HTTP Date header"
     url="$(grep -m1 ^http /etc/apk/repositories)/$(uname -m)/APKINDEX.tar.gz"
-    date_header=$(wget -S --spider "$url" 2>&1 | grep -m1 '^  Date:')
     # gnu date 不支持 -D
-    busybox date -u -D "  Date: %a, %d %b %Y %H:%M:%S GMT" -s "$date_header"
+    # 重启时 alpine 会自动写入到硬件时钟，因此不 hwclock -w
+    if date_header=$(wget -S --spider "$url" 2>&1 | grep -m1 '^  Date:') &&
+        busybox date -u -D "  Date: %a, %d %b %Y %H:%M:%S GMT" -s "$date_header" >/dev/null; then
+        return
+    fi
 
-    # 重启时 alpine 会自动写入到硬件时钟，因此这里跳过
-    # hwclock -w
+    # 两条路都失败要说出来：时钟偏差大时后面的 HTTPS 下载会因证书时间失败
+    warn "Time sync failed (NTP and HTTP Date); HTTPS downloads may fail if the clock is far off"
+    return 1
 }
 
 is_ubuntu_lts() {

@@ -209,7 +209,8 @@ fix_ifupdown() {
             if [[ "$line" = "# mac "* ]]; then
                 ethx=
                 if mac=$(echo "$line" | awk '{print $NF}'); then
-                    ethx=$(get_ethx_by_mac "$mac") || true
+                    ethx=$(get_ethx_by_mac "$mac") ||
+                        echo "fix-eth-name: no interface has MAC $mac, leaving its names in $file as they are" >&2
                 fi
                 del_this_line=true
             elif [[ "$line" = "iface e"* ]] ||
@@ -244,7 +245,8 @@ fix_netplan() {
             if echo "$line" | grep -Eq '^[[:space:]]+macaddress:'; then
                 # 得到正确的网卡名
                 mac=$(echo "$line" | awk '{print $NF}' | sed 's/"//g')
-                ethx=$(get_ethx_by_mac "$mac") || true
+                ethx=$(get_ethx_by_mac "$mac") ||
+                    echo "fix-eth-name: no interface has MAC $mac, leaving its names in $file as they are" >&2
             elif echo "$line" | grep -Eq '^[[:space:]]+eth[0-9]+:'; then
                 # 改成正确的网卡名
                 if [ -n "$ethx" ]; then

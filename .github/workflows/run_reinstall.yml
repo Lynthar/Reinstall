@@ -9,9 +9,10 @@ on:
       - "tests/check_part_layout.sh"
       - "tests/check_qcow_verify.sh"
       - "tests/check_dd_pipeline.sh"
+      - "tests/check_sync_time.sh"
 jobs:
   tests:
-    name: 分区角色、镜像验签与 DD 管道
+    name: 分区角色、镜像验签、DD 管道与时间同步
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +20,7 @@ jobs:
       - run: sudo bash tests/check_part_layout.sh
       - run: bash tests/check_qcow_verify.sh
       - run: bash tests/check_dd_pipeline.sh
+      - run: bash tests/check_sync_time.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest
