@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# 探测 reinstall.sh 所有支持的 distro / version 组合实际下载链接是否可达。
-# Weekly 跑一次（.github/workflows/check-mirrors.yml）。
-#
-# 版本与代号直接从 reinstall.sh 抽取（verify_os_name 的版本清单、setos_<distro> 的
-# codename case），不另抄一份；抽不到或对不上就在这里停下，不带着旧表去探。
+# 探测 reinstall.sh 支持的每个 distro / version 组合的下载链接是否可达，由 check-mirrors.yml 每周跑。
+# 版本与代号从 reinstall.sh 原文抽取（verify_os_name 的版本清单、setos_<distro> 的 codename case）；
+# 抽不到或对不上就停下，不带着旧表去探。
 
 set -u
 

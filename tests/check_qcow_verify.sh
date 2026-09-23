@@ -46,10 +46,12 @@ cat "$work/real.asc" "$work/evil.asc" >"$work/both.asc"
 
 printf 'cloud image bytes' >"$work/ubuntu.img"
 printf 'other bytes' >"$work/tampered.img"
-printf '%s *ubuntu.img\n' "$(sha256sum "$work/ubuntu.img" | awk '{print $1}')" >"$work/SHA256SUMS.real"
-printf '%s *ubuntu.img\n' "$(sha256sum "$work/tampered.img" | awk '{print $1}')" >"$work/SHA256SUMS.evil"
-gpg --homedir "$work/real" --batch --detach-sign --output "$work/SHA256SUMS.real.gpg" "$work/SHA256SUMS.real" 2>/dev/null
-gpg --homedir "$work/evil" --batch --detach-sign --output "$work/SHA256SUMS.evil.gpg" "$work/SHA256SUMS.evil" 2>/dev/null
+printf '%s *ubuntu.img\n' "$(sha256sum "$work/ubuntu.img" | awk '{print $1}')" >"$work/SHA256SUMS.genuine"
+printf '%s *ubuntu.img\n' "$(sha256sum "$work/tampered.img" | awk '{print $1}')" >"$work/SHA256SUMS.forged"
+for signer in real evil; do
+    gpg --homedir "$work/$signer" --batch --detach-sign \
+        --output "$work/SHA256SUMS.$signer.gpg" "$work/SHA256SUMS.genuine" 2>/dev/null
+done
 printf '%s  debian.qcow2\n' "$(sha512sum "$work/ubuntu.img" | awk '{print $1}')" >"$work/SHA512SUMS"
 
 # trans.sh's collaborators, replaced: the mirror is a directory, the key is a file.
@@ -71,25 +73,23 @@ extract_fn fetch_qcow_hash >"$work/fns.sh"
 extract_fn verify_qcow >>"$work/fns.sh"
 
 failures=0
-check() {
-    if [ "$2" = "$3" ]; then
-        echo "    ok   $1 = $2"
-    else
-        echo "    FAIL $1: expected '$3', got '$2'" >&2
-        failures=$((failures + 1))
-    fi
+fail() {
+    echo "    FAIL $1" >&2
+    failures=$((failures + 1))
 }
 
-# run_case <label> <distro> <key file> <sums variant> <image> <expected pass|fail>
+# run_case <label> <distro> <key file> <sums> <signer> <image in URL> <bytes on disk> <expect>
+# <expect> is "pass" or the start of the error_and_exit reason. Each failing case breaks
+# one premise only, so a check that stops rejecting turns its case into a pass.
 run_case() {
-    local label=$1 distro=$2 key=$3 sums=$4 image=$5 want=$6 got
+    local label=$1 distro=$2 key=$3 sums=$4 signer=$5 image=$6 bytes=$7 want=$8 got
     mirror=$work/mirror
     rm -rf "$mirror"
     mkdir -p "$mirror"
     cp "$work/$key" "$mirror/key.asc"
     if [ "$distro" = ubuntu ]; then
-        cp "$work/SHA256SUMS.${sums%%/*}" "$mirror/SHA256SUMS"
-        cp "$work/SHA256SUMS.${sums##*/}.gpg" "$mirror/SHA256SUMS.gpg"
+        cp "$work/SHA256SUMS.$sums" "$mirror/SHA256SUMS"
+        cp "$work/SHA256SUMS.$signer.gpg" "$mirror/SHA256SUMS.gpg"
     else
         cp "$work/SHA512SUMS" "$mirror/SHA512SUMS"
     fi
@@ -103,27 +103,35 @@ run_case() {
         # shellcheck disable=SC2034
         ubuntu_image_key_fpr=$real_fpr
         fetch_qcow_hash
-        qcow_file=$work/$image
-        [ -e "$qcow_file" ] || cp "$work/ubuntu.img" "$qcow_file"
+        # shellcheck disable=SC2034
+        qcow_file=$work/$bytes
         verify_qcow
     ) >"$work/log" 2>&1; then
         got=pass
     else
-        got=fail
+        got=$(sed -n 's/^error_and_exit: //p' "$work/log")
     fi
-    check "$label" "$got" "$want"
+    case "$got" in
+    "$want"*) echo "    ok   $label = $want" ;;
+    *) fail "$label: expected '$want', got '${got:-no error_and_exit}'" ;;
+    esac
 }
 
+unsigned="SHA256SUMS is not signed by the Ubuntu cloud image key"
+mismatch="Image hash mismatch"
+
 echo "== signature must come from the pinned key =="
-run_case "pinned key, genuine sums" ubuntu real.asc real/real ubuntu.img pass
-run_case "pinned key first, second key signs" ubuntu both.asc evil/evil ubuntu.img fail
-run_case "second key alone" ubuntu evil.asc evil/evil ubuntu.img fail
-run_case "genuine sums, signature from another key" ubuntu real.asc real/evil ubuntu.img fail
+run_case "pinned key, genuine sums" ubuntu real.asc genuine real ubuntu.img ubuntu.img pass
+run_case "pinned key first, second key signs" ubuntu both.asc genuine evil ubuntu.img ubuntu.img "$unsigned"
+run_case "second key alone" ubuntu evil.asc genuine evil ubuntu.img ubuntu.img "$unsigned"
+run_case "signer missing from the .asc" ubuntu real.asc genuine evil ubuntu.img ubuntu.img "$unsigned"
+run_case "sums altered after signing" ubuntu real.asc forged real ubuntu.img tampered.img "$unsigned"
 
 echo "== downloaded image must match the signed hash =="
-run_case "ubuntu image tampered after download" ubuntu real.asc real/real tampered.img fail
-run_case "debian genuine" debian real.asc - debian.qcow2 pass
-run_case "debian image not listed" debian real.asc - ubuntu.img fail
+run_case "ubuntu image tampered after download" ubuntu real.asc genuine real ubuntu.img tampered.img "$mismatch"
+run_case "debian genuine" debian real.asc - - debian.qcow2 ubuntu.img pass
+run_case "debian image tampered after download" debian real.asc - - debian.qcow2 tampered.img "$mismatch"
+run_case "debian image not listed" debian real.asc - - other.qcow2 ubuntu.img "other.qcow2 not listed"
 
 echo "== checksums are verified before the disk is touched =="
 for arm in debian ubuntu; do
