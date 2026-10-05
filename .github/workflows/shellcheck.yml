@@ -30,6 +30,8 @@ jobs:
           shellcheck tests/check_qcow_verify.sh
           shellcheck tests/check_dd_pipeline.sh
           shellcheck tests/check_sync_time.sh
+          shellcheck tests/check_find_xda.sh
+          shellcheck tests/check_mirrors.sh
       - name: Check for calls to undefined functions
         run: |
           bash tests/check_undefined_calls.sh \

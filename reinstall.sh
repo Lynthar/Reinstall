@@ -7,7 +7,7 @@ set -eE
 confhome=https://raw.githubusercontent.com/Lynthar/Reinstall/main
 
 # 所有下载默认校验 TLS 证书。--allow-insecure-bootstrap 把它设成 --insecure，
-# 那会让 trans.sh 与 keys/ubuntu-cloud.asc 都可被中间人替换
+# 那会让 trans.sh、临时 Alpine 与 keys/ubuntu-cloud.asc 都可被中间人替换
 insecure_opt=
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
@@ -72,14 +72,15 @@ Usage: ./reinstall.sh debian   11|12|13
                       [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
                       [--allow-insecure-bootstrap]
                                                  (skip TLS certificate checks on every download.
-                                                  trans.sh and the Ubuntu signing key then become
-                                                  man-in-the-middle-able. For hosts with a broken
-                                                  CA store, such as 32-bit Cygwin.)
+                                                  trans.sh, the temporary Alpine and the Ubuntu
+                                                  signing key then become man-in-the-middle-able.
+                                                  For hosts with a broken CA store, such as
+                                                  32-bit Cygwin.)
 
 Manual: https://github.com/Lynthar/Reinstall
 
 EOF
-    exit 1
+    exit "${1:-1}"
 }
 
 info() {
@@ -618,12 +619,13 @@ setos() {
     setos_alpine() {
         is_virt && flavour=virt || flavour=lts
 
-        # 不要用https 因为甲骨文云arm initramfs阶段不会从硬件同步时钟，导致访问https出错
-        mirror=http://dl-cdn.alpinelinux.org/alpine/v$releasever
-        eval ${step}_vmlinuz=$mirror/releases/$basearch/netboot/vmlinuz-$flavour
-        eval ${step}_initrd=$mirror/releases/$basearch/netboot/initramfs-$flavour
-        eval ${step}_modloop=$mirror/releases/$basearch/netboot/modloop-$flavour
-        eval ${step}_repo=$mirror/main
+        # 内核与 initramfs 由宿主下载，走 HTTPS。modloop 与仓库由 initramfs 自己取，只能 HTTP：
+        # 甲骨文云 arm 在那个阶段不从硬件同步时钟，HTTPS 会失败。仓库靠 apk 签名，modloop 靠 init 核哈希
+        mirror=dl-cdn.alpinelinux.org/alpine/v$releasever
+        eval ${step}_vmlinuz=https://$mirror/releases/$basearch/netboot/vmlinuz-$flavour
+        eval ${step}_initrd=https://$mirror/releases/$basearch/netboot/initramfs-$flavour
+        eval ${step}_modloop=http://$mirror/releases/$basearch/netboot/modloop-$flavour
+        eval ${step}_repo=http://$mirror/main
     }
 
     setos_debian() {
@@ -999,29 +1001,8 @@ is_valid_ram_size() {
 }
 
 check_ram() {
-    ram_standard=$(
-        case "$distro" in
-        alpine | debian | kali | dd) echo 256 ;;
-        arch | gentoo | aosc | nixos) echo 512 ;;
-        redhat | centos | almalinux | rocky | fedora | oracle | ubuntu | anolis | opencloudos | openeuler) echo 1024 ;;
-        opensuse | fnos) echo -1 ;; # 没有安装模式
-        esac
-    )
-
-    # 不用检查内存的情况
-    if [ "$ram_standard" -eq 0 ]; then
-        return
-    fi
-
-    # 未测试
-    ram_cloud_image=256
-
-    has_cloud_image=$(
-        case "$distro" in
-        redhat | centos | almalinux | rocky | oracle | fedora | debian | ubuntu | opensuse | anolis | openeuler) echo true ;;
-        alpine | dd | arch | gentoo | nixos | kali) echo false ;;
-        esac
-    )
+    # 四个目标都是这个下限（debian / ubuntu 走云镜像），未实测
+    ram_min=256
 
     if is_in_windows; then
         ram_size=$(wmic memorychip get capacity | awk -F= '{sum+=$2} END {if(sum>0) print sum/1024/1024}')
@@ -1058,19 +1039,8 @@ check_ram() {
         error_and_exit "Could not detect RAM size."
     fi
 
-    # ram 足够就用普通方法安装，否则如果内存大于512就用 cloud image
-    # TODO: 测试 256 384 内存
-    if ! is_use_cloud_image && [ $ram_size -lt $ram_standard ]; then
-        if $has_cloud_image; then
-            info "RAM < $ram_standard MB. Fallback to cloud image mode"
-            cloud_image=1
-        else
-            error_and_exit "Could not install $distro: RAM < $ram_standard MB."
-        fi
-    fi
-
-    if is_use_cloud_image && [ $ram_size -lt $ram_cloud_image ]; then
-        error_and_exit "Could not install $distro using cloud image: RAM < $ram_cloud_image MB."
+    if [ $ram_size -lt $ram_min ]; then
+        error_and_exit "Could not install $distro: RAM < $ram_min MB."
     fi
 }
 
@@ -1810,14 +1780,10 @@ build_extra_cmdline() {
 }
 
 echo_tmp_ttys() {
-    if false; then
-        curl -L $confhome/ttys.sh | sh -s "console="
-    else
-        case "$basearch" in
-        x86_64) echo "console=ttyS0,115200n8 console=tty0" ;;
-        aarch64) echo "console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0" ;;
-        esac
-    fi
+    case "$basearch" in
+    x86_64) echo "console=ttyS0,115200n8 console=tty0" ;;
+    aarch64) echo "console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0" ;;
+    esac
 }
 
 get_entry_name() {
@@ -1886,14 +1852,18 @@ get_ip_conf_cmd() {
 }
 
 mod_initrd_alpine() {
+    # Live OS 走明文 HTTP 取 modloop，Alpine 自己验签失败也照样挂载；
+    # 这里经 HTTPS 取同一个文件算哈希，交给 hack 5 在切换根之前核对
+    modloop_file=$tmp/modloop_file
+    curl -Lo $modloop_file "${nextos_modloop/#http:/https:}"
+    modloop_sha256=$(sha256sum $modloop_file | awk '{print $1}')
+
     # hack 1 v3.19 和之前的 virt 内核需添加 ipv6 模块
     if virt_dir=$(ls -d $initrd_dir/lib/modules/*-virt 2>/dev/null); then
         ipv6_dir=$virt_dir/kernel/net/ipv6
         if ! [ -f $ipv6_dir/ipv6.ko ] && ! grep -q ipv6 $initrd_dir/lib/modules/*/modules.builtin; then
             mkdir -p $ipv6_dir
-            modloop_file=$tmp/modloop_file
             modloop_dir=$tmp/modloop_dir
-            curl -Lo $modloop_file $nextos_modloop
             if is_in_windows; then
                 # cygwin 没有 unsquashfs
                 7z e $modloop_file ipv6.ko -r -y -o$ipv6_dir
@@ -1905,6 +1875,7 @@ mod_initrd_alpine() {
             fi
         fi
     fi
+    rm -f $modloop_file
 
     # hack 下载 dhcpcd
     # shellcheck disable=SC2154
@@ -1972,6 +1943,21 @@ EOF
                 rm -rf \$dir
             fi
         done
+EOF
+
+    # hack 5 核对 modloop。/etc/init.d/modloop 见 /lib 下已有同名文件就直接挂载、不再下载；
+    # 下载失败也停下：否则它会自己再明文取一次，核对就被绕过了。插在 /dev /proc 被挪进新根之前
+    insert_into_file init before '^# switch over to new root' <<EOF
+        modloop_file=\$sysroot/lib/${nextos_modloop##*/}
+        for i in 1 2 3 4 5; do
+            wget -T 10 -O \$modloop_file $nextos_modloop && break
+            rm -f \$modloop_file
+            sleep 5
+        done
+        if ! echo "$modloop_sha256  \$modloop_file" | sha256sum -c; then
+            echo "modloop does not match the sha256 fetched over HTTPS. Not booting it."
+            exec /bin/busybox sh
+        fi
 EOF
 }
 
@@ -2183,7 +2169,7 @@ done
 
 # 整理参数
 if ! opts=$(getopt -n $0 -o "h,x" --long "$long_opts" -- "$@"); then
-    exit
+    exit 1
 fi
 
 # /tmp 挂载在内存的话，可能不够空间
@@ -2195,7 +2181,7 @@ eval set -- "$opts"
 while true; do
     case "$1" in
     -h | --help)
-        usage_and_exit
+        usage_and_exit 0
         ;;
     --commit)
         if ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
@@ -2206,7 +2192,7 @@ while true; do
         ;;
     --allow-insecure-bootstrap)
         insecure_opt=--insecure
-        warn "TLS certificate verification is off for every download, including trans.sh and keys/ubuntu-cloud.asc."
+        warn "TLS certificate verification is off for every download, including trans.sh, the temporary Alpine and keys/ubuntu-cloud.asc."
         shift
         ;;
     --timezone)
@@ -2246,7 +2232,7 @@ while true; do
         ;;
     --passwd | --password)
         [ -n "$2" ] || error_and_exit "Need value for $1"
-        # 警告：密码会出现在 ps 输出和 shell history 中，建议改用 --password-stdin
+        warn "$1 puts the password in ps output and shell history. Prefer --password-stdin."
         password=$2
         shift 2
         ;;
@@ -2401,22 +2387,8 @@ esac
 
 # 检查硬件架构
 if is_in_windows; then
-    # x86-based PC
-    # x64-based PC
-    # ARM-based PC
-    # ARM64-based PC
-
-    if false; then
-        # 如果机器没有 wmic 则需要下载 wmic.ps1，但此时未判断国内外，还是用国外源
-        basearch=$(wmic ComputerSystem get SystemType | grep '=' | cut -d= -f2 | cut -d- -f1)
-    elif true; then
-        # 可以用
-        basearch=$(reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PROCESSOR_ARCHITECTURE |
-            grep . | tail -1 | awk '{print $NF}')
-    else
-        # 也可以用
-        basearch=$(cmd /c "if defined PROCESSOR_ARCHITEW6432 (echo %PROCESSOR_ARCHITEW6432%) else (echo %PROCESSOR_ARCHITECTURE%)")
-    fi
+    basearch=$(reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PROCESSOR_ARCHITECTURE |
+        grep . | tail -1 | awk '{print $NF}')
 else
     # archlinux 云镜像没有 arch 命令
     # https://en.wikipedia.org/wiki/Uname
@@ -2453,6 +2425,10 @@ if [[ "$confhome" =~ ^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+$ ]];
 
     confhome="https://raw.githubusercontent.com/$repo/$commit"
     info false "Pinned confhome to $confhome"
+elif [ -n "$commit" ]; then
+    error_and_exit "--commit needs confhome to be a raw.githubusercontent.com branch URL: $confhome"
+else
+    warn "confhome is not a raw.githubusercontent.com branch URL, so it is not pinned: $confhome"
 fi
 
 # 时区设置：

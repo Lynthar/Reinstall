@@ -10,9 +10,10 @@ on:
       - "tests/check_qcow_verify.sh"
       - "tests/check_dd_pipeline.sh"
       - "tests/check_sync_time.sh"
+      - "tests/check_find_xda.sh"
 jobs:
   tests:
-    name: 分区角色、镜像验签、DD 管道与时间同步
+    name: 分区角色、镜像验签、DD 管道、时间同步与选盘
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +22,7 @@ jobs:
       - run: bash tests/check_qcow_verify.sh
       - run: bash tests/check_dd_pipeline.sh
       - run: bash tests/check_sync_time.sh
+      - run: bash tests/check_find_xda.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest

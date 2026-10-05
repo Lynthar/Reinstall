@@ -1,6 +1,6 @@
 #!/bin/ash
 # shellcheck shell=dash
-# shellcheck disable=SC2086,SC3047,SC3036,SC3010,SC3001,SC3060
+# shellcheck disable=SC2086,SC3047,SC3036,SC3010,SC3001
 # alpine 默认使用 busybox ash
 # 注意 bash 和 ash 以下语句结果不同
 # [[ a = '*a' ]] && echo 1
@@ -350,8 +350,11 @@ find_xda() {
         # sfdisk
         for disk in $(get_all_disks); do
             if sfdisk --disk-id "/dev/$disk" | sed 's/0x//' | grep -ix "$main_disk"; then
+                # 克隆盘的分区表 id 相同，取第一个匹配可能整盘擦错
+                if [ -n "$xda" ]; then
+                    error_and_exit "Disk id $main_disk is on both $xda and $disk."
+                fi
                 xda=$disk
-                break
             fi
         done
     else
@@ -1743,12 +1746,7 @@ get_alpine_firmware_pkgs() {
 get_ucode_firmware_pkgs() {
     is_virt && return
 
-    case "$distro" in
-    centos | almalinux | rocky | oracle | redhat | anolis | opencloudos | openeuler) os=elol ;;
-    *) os=$distro ;;
-    esac
-
-    case "$os-$(get_cpu_vendor)" in
+    case "$distro-$(get_cpu_vendor)" in
     # alpine 的 linux-firmware 以文件夹进行拆分
     # setup-alpine 会自动安装需要的 firmware（modloop 没挂载则无效）
     # https://github.com/alpinelinux/alpine-conf/blob/3.18.1/setup-disk.in#L421
@@ -1763,31 +1761,6 @@ get_ucode_firmware_pkgs() {
     ubuntu-intel) echo linux-firmware intel-microcode ;;
     ubuntu-amd) echo linux-firmware amd64-microcode ;;
     ubuntu-*) echo linux-firmware ;;
-
-    # 无法同时安装 kernel-firmware kernel-firmware-intel
-    opensuse-intel) echo kernel-firmware ucode-intel ;;
-    opensuse-amd) echo kernel-firmware ucode-amd ;;
-    opensuse-*) echo kernel-firmware ;;
-
-    arch-intel) echo linux-firmware intel-ucode ;;
-    arch-amd) echo linux-firmware amd-ucode ;;
-    arch-*) echo linux-firmware ;;
-
-    gentoo-intel) echo linux-firmware intel-microcode ;;
-    gentoo-amd) echo linux-firmware ;;
-    gentoo-*) echo linux-firmware ;;
-
-    nixos-intel) echo linux-firmware microcodeIntel ;;
-    nixos-amd) echo linux-firmware microcodeAmd ;;
-    nixos-*) echo linux-firmware ;;
-
-    fedora-intel) echo linux-firmware microcode_ctl ;;
-    fedora-amd) echo linux-firmware amd-ucode-firmware microcode_ctl ;;
-    fedora-*) echo linux-firmware microcode_ctl ;;
-
-    elol-intel) echo linux-firmware microcode_ctl ;;
-    elol-amd) echo linux-firmware microcode_ctl ;;
-    elol-*) echo linux-firmware microcode_ctl ;;
     esac
 }
 

@@ -57,10 +57,6 @@
         </svg>
     </button>
 
-    <script
-        src="https://mirrors.sustech.edu.cn/cdnjs/ajax/libs/reconnecting-websocket/1.0.0/reconnecting-websocket.min.js"
-        type="application/javascript"></script>
-
     <script>
         const logContainer = document.getElementById('log-container');
         const scrollToBottomButton = document.getElementById('scroll-to-bottom');
@@ -143,16 +139,36 @@
             }
         }
 
-        var ws = new ReconnectingWebSocket('ws://' + location.host + '/');
-        ws.onopen = function () {
-            bufferMessage('WebSocket Connected.');
-        };
-        ws.onclose = function () {
-            bufferMessage('WebSocket Disconnected.');
-        };
-        ws.onmessage = function (event) {
-            bufferMessage(event.data);
-        };
+        // 不加载任何外部脚本：页面一打开就会把运维者的 IP 交给那个第三方
+        const RECONNECT_MAX_DELAY = 30000; // 毫秒
+        let reconnectDelay = 1000;
+        let wasOpen = false;
+
+        function connect() {
+            const ws = new WebSocket('ws://' + location.host + '/');
+            ws.onopen = function () {
+                // 服务端每个连接都从日志开头重放，清掉旧内容免得重复
+                logContainer.textContent = '';
+                messageBuffer = [];
+                document.body.className = '';
+                reconnectDelay = 1000;
+                wasOpen = true;
+                bufferMessage('WebSocket Connected.');
+            };
+            ws.onclose = function () {
+                if (wasOpen) {
+                    bufferMessage('WebSocket Disconnected.');
+                    wasOpen = false;
+                }
+                setTimeout(connect, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 1.5, RECONNECT_MAX_DELAY);
+            };
+            ws.onmessage = function (event) {
+                bufferMessage(event.data);
+            };
+        }
+
+        connect();
     </script>
 </body>
 

@@ -67,21 +67,23 @@ signature verification (the signature must come from the key pinned in the
 script) plus SHA256; Debian cloud images get SHA512 integrity checking. The
 signed checksums are fetched and verified before the disk is touched; only the
 downloaded image's hash is compared afterwards. **`dd` mode
-verifies nothing** — the image's integrity is on you. The temporary Alpine
-kernel and initramfs aren't verified either.
+verifies nothing** — the image's integrity is on you.
 
 **The bootstrap is pinned to a commit.** At runtime the raw URL is resolved to a
 40-hex commit SHA before anything is fetched, and `--commit` lets you choose one
 (40 lowercase hex characters, nothing else). If the SHA can't be resolved the
 run aborts rather than falling back to the branch ref, which would pin nothing.
 
-**Downloads are not strictly HTTPS end to end.** The temporary Alpine stage is
-fetched over plain HTTP — there's a comment explaining it works around clocks
-that aren't synced yet on some ARM instances. Everything else **verifies TLS
-certificates by default**. Hosts with a broken CA store (32-bit Cygwin is the
-known one) can turn that off with `--allow-insecure-bootstrap`, **at the price
-of letting `trans.sh` and the Ubuntu signing key be swapped in transit**; the
-flag prints a warning when you use it.
+**Downloads are not strictly HTTPS end to end.** Two things the temporary Alpine
+fetches for itself while booting go over plain HTTP — there's a comment
+explaining it works around clocks that aren't synced yet on some ARM instances.
+Its apk packages are checked against apk's own signatures, and the modloop is
+only mounted if it matches the SHA-256 taken over HTTPS before the reboot;
+otherwise the boot stops there. Everything else **verifies TLS certificates by
+default**. Hosts with a broken CA store (32-bit Cygwin is the known one) can
+turn that off with `--allow-insecure-bootstrap`, **at the price of letting
+`trans.sh`, the temporary Alpine and the Ubuntu signing key be swapped in
+transit**; the flag prints a warning when you use it.
 
 **Root login is enabled when it finishes.** With an SSH key, that key is written
 to `authorized_keys` and root key login is allowed; without one, a root password
