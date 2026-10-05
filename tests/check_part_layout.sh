@@ -67,9 +67,12 @@ check() {
     fi
 }
 
+# The table is read from the image file, not the loop device: parted opens a device
+# for writing, and udev answers that close by re-reading the partition table, which
+# drops the partition nodes the label checks below are about to probe.
 # parted -ms fields: num:start:end:size:fs:name:flags
-part_field() { parted -ms "$1" print | awk -F: -v n="$2" -v f="$3" '$1 == n {sub(/;$/, "", $f); print $f}'; }
-table_format() { parted -ms "$1" print | awk -F: 'NR == 2 {print $6}'; }
+part_field() { parted -ms "$harness/disk.img" print | awk -F: -v n="$1" -v f="$2" '$1 == n {sub(/;$/, "", $f); print $f}'; }
+table_format() { parted -ms "$harness/disk.img" print | awk -F: 'NR == 2 {print $6}'; }
 # -p probes the device instead of trusting the blkid cache, which outlives the
 # loop device number and would answer for the previous case's partition table.
 part_label() { blkid -p -s LABEL -o value "$1" 2>/dev/null || true; }
@@ -102,34 +105,34 @@ end_case() {
 
 for boot_mode in efi bios; do
     run_case "ubuntu / $boot_mode / 8 GiB" ubuntu "$boot_mode" 8G
-    check "partition table" "$(table_format "$dev")" gpt
+    check "partition table" "$(table_format)" gpt
     check "p3 label" "$(part_label "${dev}p3")" installer
     check "p3 filesystem" "$(part_fstype "${dev}p3")" ext4
     check "p2 left to the target's mkfs" "$(part_fstype "${dev}p2")" ""
     if [ "$boot_mode" = efi ]; then
         check "p1 filesystem" "$(part_fstype "${dev}p1")" vfat
         check "p1 label" "$(part_label "${dev}p1")" efi
-        check "p1 size" "$(part_field "$dev" 1 4)" 105MB
+        check "p1 size" "$(part_field 1 4)" 105MB
     else
-        check "p1 flags" "$(part_field "$dev" 1 7)" bios_grub
-        check "p1 size" "$(part_field "$dev" 1 4)" 1049kB
+        check "p1 flags" "$(part_field 1 7)" bios_grub
+        check "p1 size" "$(part_field 1 4)" 1049kB
     fi
     end_case
 done
 
 run_case "ubuntu / bios / 3 TiB" ubuntu bios 3T
-check "partition table" "$(table_format "$dev")" gpt
+check "partition table" "$(table_format)" gpt
 check "p3 label" "$(part_label "${dev}p3")" installer
 check "p2 left to the target's mkfs" "$(part_fstype "${dev}p2")" ""
-check "p1 flags" "$(part_field "$dev" 1 7)" bios_grub
+check "p1 flags" "$(part_field 1 7)" bios_grub
 end_case
 
 for boot_mode in efi bios; do
     run_case "debian / $boot_mode / 8 GiB" debian "$boot_mode" 8G
-    check "partition table" "$(table_format "$dev")" gpt
+    check "partition table" "$(table_format)" gpt
     check "p1 label" "$(part_label "${dev}p1")" os
     check "p2 label" "$(part_label "${dev}p2")" installer
-    check "no third partition" "$(part_field "$dev" 3 1)" ""
+    check "no third partition" "$(part_field 3 1)" ""
     end_case
 done
 
