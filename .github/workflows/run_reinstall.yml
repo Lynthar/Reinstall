@@ -11,12 +11,24 @@ on:
       - "tests/check_dd_pipeline.sh"
       - "tests/check_sync_time.sh"
       - "tests/check_find_xda.sh"
+  pull_request:
+    paths:
+      - "reinstall.sh"
+      - "trans.sh"
+      - ".github/workflows/run_reinstall.yml"
+      - "tests/check_part_layout.sh"
+      - "tests/check_qcow_verify.sh"
+      - "tests/check_dd_pipeline.sh"
+      - "tests/check_sync_time.sh"
+      - "tests/check_find_xda.sh"
+permissions:
+  contents: read
 jobs:
   tests:
     name: 分区角色、镜像验签、DD 管道、时间同步与选盘
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sudo apt-get install -y parted dosfstools busybox
       - run: sudo bash tests/check_part_layout.sh
       - run: bash tests/check_qcow_verify.sh
@@ -26,15 +38,18 @@ jobs:
   run:
     name: 运行主程序
     runs-on: ubuntu-latest
+    env:
+      # A pull request's github.sha is a synthetic merge commit; pin to the head commit it tests
+      COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: dd
-        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
       - name: alpine
-        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} alpine
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" alpine
       - name: debian
         # debian/ubuntu are forced to cloud_image mode in reinstall.sh,
         # passing --ci is redundant
-        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} debian
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" debian
       - name: ubuntu
-        run: sudo bash reinstall.sh --debug --password 123@@@ --commit ${{ github.sha }} ubuntu
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" ubuntu
