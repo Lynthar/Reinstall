@@ -66,7 +66,8 @@ jobs:
           mkdir /tmp/initrd
           cd /tmp/initrd
           zcat /reinstall-initrd | sudo cpio -idm --quiet
-          for f in trans.sh initrd-network.sh; do cmp "$f" "$GITHUB_WORKSPACE/$f"; done
+          # curl --create-dirs makes repo/ 0750 and cpio keeps it; the Live OS reads it as root
+          for f in trans.sh initrd-network.sh; do sudo cmp "$f" "$GITHUB_WORKSPACE/$f"; done
           for f in logviewer.html fix-eth-name.sh fix-eth-name.initd fix-eth-name.service keys/ubuntu-cloud.asc; do
-            cmp "repo/$f" "$GITHUB_WORKSPACE/$f"
+            sudo cmp "repo/$f" "$GITHUB_WORKSPACE/$f"
           done
