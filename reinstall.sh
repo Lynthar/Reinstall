@@ -1065,23 +1065,6 @@ is_secure_boot_enabled() {
     fi
 }
 
-is_need_grub_extlinux() {
-    return 0
-}
-
-# 只有 linux bios 是用本机的 grub/extlinux
-is_use_local_grub_extlinux() {
-    is_need_grub_extlinux && ! is_in_windows && ! is_efi
-}
-
-is_use_local_grub() {
-    is_use_local_grub_extlinux && is_mbr_using_grub
-}
-
-is_use_local_extlinux() {
-    is_use_local_grub_extlinux && ! is_mbr_using_grub
-}
-
 is_mbr_using_grub() {
     find_main_disk
     # 各发行版不一定自带 strings hexdump xxd od 命令
@@ -1461,10 +1444,9 @@ add_efi_entry_in_windows() {
     bcdedit /set '{fwbootmgr}' displayorder '{bootmgr}' /addfirst
 
     # 添加启动项
-    id=$(bcdedit /copy '{bootmgr}' /d "$(get_entry_name)" | grep -o '{.*}')
-    bcdedit /set $id device partition=$x:
-    bcdedit /set $id path \\EFI\\reinstall\\$basename
-    bcdedit /set '{fwbootmgr}' bootsequence $id
+    boot_entry_id=$(bcdedit /copy '{bootmgr}' /d "$(get_entry_name)" | grep -o '{.*}')
+    bcdedit /set $boot_entry_id device partition=$x:
+    bcdedit /set $boot_entry_id path \\EFI\\reinstall\\$basename
 }
 
 get_maybe_efi_dirs_in_linux() {
@@ -1513,26 +1495,27 @@ add_efi_entry_in_linux() {
     install_pkg efibootmgr
 
     for efi_part in $(get_maybe_efi_dirs_in_linux); do
-        if find $efi_part -iname "*.efi" >/dev/null; then
-            dist_dir=$efi_part/EFI/reinstall
+        # find 找没找到都返回 0
+        if find $efi_part -iname "*.efi" | grep -q .; then
+            efi_reinstall_dir=$efi_part/EFI/reinstall
             basename=$(basename $source)
-            mkdir -p $dist_dir
+            mkdir -p $efi_reinstall_dir
 
             if [[ "$source" = http* ]]; then
-                curl -Lo "$dist_dir/$basename" "$source"
+                curl -Lo "$efi_reinstall_dir/$basename" "$source"
             else
-                cp -f "$source" "$dist_dir/$basename"
+                cp -f "$source" "$efi_reinstall_dir/$basename"
             fi
 
             if false; then
                 grub_probe="$(command -v grub-probe grub2-probe)"
-                dev_part="$("$grub_probe" -t device "$dist_dir")"
+                dev_part="$("$grub_probe" -t device "$efi_reinstall_dir")"
             else
                 install_pkg findmnt
                 # arch findmnt 会得到
                 # systemd-1
                 # /dev/sda2
-                dev_part=$(findmnt -T "$dist_dir" -no SOURCE | grep '^/dev/')
+                dev_part=$(findmnt -T "$efi_reinstall_dir" -no SOURCE | grep '^/dev/')
             fi
 
             # 失败时把命令和输出都打出来：这一步的错误只有 efibootmgr 自己说得清
@@ -1546,8 +1529,7 @@ add_efi_entry_in_linux() {
                 echo "$res"
                 error_and_exit "Could not add efi entry."
             fi
-            id=$(echo "$res" | grep_efi_entry | tail -1 | grep_efi_index)
-            efibootmgr --bootnext $id
+            boot_entry_id=$(echo "$res" | grep_efi_entry | tail -1 | grep_efi_index)
             return
         fi
     done
@@ -1699,13 +1681,12 @@ install_grub_win() {
 
         # 添加引导
         # 脚本可能不是首次运行，所以先删除原来的
-        id='{1c41f649-1637-52f1-aea8-f96bfebeecc8}'
-        bcdedit /enum all | grep -a $id && bcdedit /delete $id
-        bcdedit /create $id /d "$(get_entry_name)" /application bootsector
-        bcdedit /set $id device partition=$c:
-        bcdedit /set $id path \\g2ldr
-        bcdedit /displayorder $id /addlast
-        bcdedit /bootsequence $id /addfirst
+        boot_entry_id='{1c41f649-1637-52f1-aea8-f96bfebeecc8}'
+        bcdedit /enum all | grep -a $boot_entry_id && bcdedit /delete $boot_entry_id
+        bcdedit /create $boot_entry_id /d "$(get_entry_name)" /application bootsector
+        bcdedit /set $boot_entry_id device partition=$c:
+        bcdedit /set $boot_entry_id path \\g2ldr
+        bcdedit /displayorder $boot_entry_id /addlast
     fi
 }
 
@@ -1730,6 +1711,220 @@ find_grub_extlinux_cfg() {
     else
         error_and_exit "Find $count $filename."
     fi
+}
+
+# /reinstall-vmlinuz 与 /reinstall-initrd 在当前系统的根目录，这里给出根目录在引导器眼里的路径
+get_root_dir_for_bootloader() {
+    local dir
+    if is_in_windows; then
+        # C:/cygwin64 → /cygwin64/
+        echo "$(cygpath -m / | cut -d: -f2-)/"
+    elif is_os_in_btrfs; then
+        # 第一行可能是 / 或 root 或 @/.snapshots/1/snapshot
+        dir=$(btrfs subvolume show / | head -1)
+        if [ "$dir" = / ]; then
+            echo /
+        else
+            echo "/$dir/"
+        fi
+    else
+        echo /
+    fi
+}
+
+# 不是 bash：write_grub_entry 把函数体原样写进 grub.cfg。cloudcone 从光驱的 grub 再 configfile 硬盘的 grub.cfg，
+# $prefix 仍指向光驱，读不到硬盘 grubenv 里的 next_entry，这段在 系统 / boot 分区 × grub / grub2 目录里找回它。
+# cloudcone 的 debian 模板可用，ubuntu 模板连菜单项都不显示
+# shellcheck disable=SC2121,SC2154
+load_grubenv_if_not_loaded() {
+    if ! [ -s $prefix/grubenv ]; then
+        for dir in /boot/grub /boot/grub2 /grub /grub2; do
+            set grubenv="($root)$dir/grubenv"
+            if [ -s $grubenv ]; then
+                load_env --file $grubenv
+                if [ "${next_entry}" ]; then
+                    set default="${next_entry}"
+                    set next_entry=
+                    save_env --file $grubenv next_entry
+                else
+                    set default="0"
+                fi
+                return
+            fi
+        done
+    fi
+}
+
+# 覆盖写 $1
+write_grub_entry() {
+    local cfg=$1 dir vmlinuz initrd
+    dir=$(get_root_dir_for_bootloader)
+    vmlinuz=${dir}reinstall-vmlinuz
+    initrd=${dir}reinstall-initrd
+
+    info grub
+    echo $cfg
+
+    get_function_content load_grubenv_if_not_loaded >$cfg
+
+    # 实测 centos 7 lvm 要手动加载 lvm 模块
+    # 原系统为 openeuler 云镜像，需要添加 --unrestricted，否则要输入密码
+    del_empty_lines <<EOF | del_comment_lines | tee -a $cfg
+set timeout_style=menu
+set timeout=5
+menuentry "$(get_entry_name)" --unrestricted {
+    $(! is_in_windows && echo 'insmod lvm')
+    $(is_os_in_btrfs && echo 'set btrfs_relative_path=n')
+    # fedora efi 没有 load_video
+    insmod all_video
+    # set gfxmode=800x600
+    # set gfxpayload=keep
+    # terminal_output gfxterm 在 vultr 上会花屏
+    # terminal_output console
+    search --no-floppy --file --set=root $vmlinuz
+    linux $vmlinuz $cmdline
+    initrd $initrd
+}
+EOF
+}
+
+# 引导项按路径分五种，每种一对函数：write_boot_<路径> 写好引导器、配置与内核文件，arm_boot_<路径> 设一次性启动。
+# 一次性启动只能在 arm_boot_* 里设，否则写到一半失败时，重启进的是没写完的引导
+# （tests/check_boot_entry.sh 查）
+write_boot_win_efi() {
+    install_grub_win
+    write_grub_entry /cygdrive/$c/grub.cfg
+}
+
+arm_boot_win_efi() {
+    bcdedit /set '{fwbootmgr}' bootsequence $boot_entry_id
+}
+
+write_boot_win_bios() {
+    install_grub_win
+    write_grub_entry /cygdrive/$c/grub/grub.cfg
+}
+
+arm_boot_win_bios() {
+    bcdedit /bootsequence $boot_entry_id /addfirst
+}
+
+write_boot_linux_efi() {
+    install_grub_linux_efi
+    write_grub_entry $efi_reinstall_dir/grub.cfg
+}
+
+arm_boot_linux_efi() {
+    efibootmgr --bootnext $boot_entry_id
+}
+
+write_boot_linux_grub() {
+    if is_have_cmd update-grub; then
+        # alpine debian ubuntu
+        grub_cfg=$(grep -o '[^ ]*grub.cfg' "$(get_cmd_path update-grub)" | head -1)
+    else
+        # 找出主配置文件（含有menuentry|blscfg）
+        grub_cfg=$(find_grub_extlinux_cfg '/boot/grub*' grub.cfg 'menuentry|blscfg')
+    fi
+
+    # 重新生成 grub.cfg，因为有些机子例如hython debian的grub.cfg少了40_custom 41_custom
+    if is_have_cmd grub2-mkconfig; then
+        grub=grub2
+    elif is_have_cmd grub-mkconfig; then
+        grub=grub
+    else
+        error_and_exit "grub not found"
+    fi
+
+    # nixos 手动执行 grub-mkconfig -o /boot/grub/grub.cfg 会丢失系统启动条目
+    # 正确的方法是修改 configuration.nix 的 boot.loader.grub.extraEntries
+    # 但是修改 configuration.nix 不是很好，因此改成修改 grub.cfg
+    if [ -x /nix/var/nix/profiles/system/bin/switch-to-configuration ]; then
+        # 生成 grub.cfg
+        /nix/var/nix/profiles/system/bin/switch-to-configuration boot
+        # 手动启用 41_custom
+        nixos_grub_home="$(dirname "$(readlink -f "$(get_cmd_path grub-mkconfig)")")/.."
+        $nixos_grub_home/etc/grub.d/41_custom >>$grub_cfg
+    elif is_have_cmd update-grub; then
+        update-grub
+    else
+        $grub-mkconfig -o $grub_cfg
+    fi
+
+    write_grub_entry "$(dirname $grub_cfg)/custom.cfg"
+}
+
+arm_boot_linux_grub() {
+    $grub-reboot "$(get_entry_name)"
+}
+
+write_boot_linux_extlinux() {
+    extlinux_cfg=$(find_grub_extlinux_cfg /boot extlinux.conf LINUX)
+    extlinux_dir=$(dirname $extlinux_cfg)
+
+    if is_have_cmd update-extlinux; then
+        update-extlinux
+    fi
+
+    # 单独的 boot 分区：内核文件拷到 extlinux.conf 所在的目录
+    local dir
+    if is_boot_in_separate_partition; then
+        dir=
+    else
+        dir=$(get_root_dir_for_bootloader)
+    fi
+
+    info extlinux
+    echo $extlinux_cfg
+
+    # 不起作用
+    # 好像跟 extlinux --once 有冲突
+    sed -i "/^MENU HIDDEN/d" $extlinux_cfg
+    sed -i "/^TIMEOUT /d" $extlinux_cfg
+
+    del_empty_lines <<EOF | tee -a $extlinux_cfg
+TIMEOUT 5
+LABEL reinstall
+  MENU LABEL $(get_entry_name)
+  LINUX ${dir}reinstall-vmlinuz
+  INITRD ${dir}reinstall-initrd
+  $([ -n "$cmdline" ] && echo "APPEND $cmdline")
+EOF
+
+    if is_boot_in_separate_partition; then
+        info "copying files to $extlinux_dir"
+        cp -f /reinstall-vmlinuz /reinstall-initrd $extlinux_dir
+    fi
+}
+
+arm_boot_linux_extlinux() {
+    extlinux --once=reinstall $extlinux_dir
+}
+
+# 只有 linux bios 用本机的 grub / extlinux。linux efi 用下载的 grub：
+# 原系统的 grub 可能没有去除 aarch64 内核的 magic number 校验，也可能根本不是 grub
+get_boot_path() {
+    if is_in_windows; then
+        if is_efi; then
+            echo win_efi
+        else
+            echo win_bios
+        fi
+    elif is_efi; then
+        echo linux_efi
+    elif is_mbr_using_grub; then
+        echo linux_grub
+    else
+        echo linux_extlinux
+    fi
+}
+
+# 先写后设：写到一半失败时没有一次性启动项，重启仍回原系统
+install_boot_entry() {
+    local path
+    path=$(get_boot_path)
+    write_boot_$path
+    arm_boot_$path
 }
 
 # 空格、&、用户输入的网址要加引号，否则 grub 无法正确识别
@@ -2448,6 +2643,10 @@ dd | debian | ubuntu)
     ;;
 esac
 
+# 选盘与内核命令行在动引导项之前定下：系统横跨多盘时在这里就退出
+find_main_disk
+build_cmdline
+
 # 删除之前的条目
 # bios 无论什么情况都用到 grub，所以不用处理
 if is_efi; then
@@ -2487,229 +2686,7 @@ curl -Lo /reinstall-initrd $nextos_initrd
 # 修改 alpine initrd（nextos 永远是 alpine，dd 模式不进入这里）
 mod_initrd
 
-# grub / extlinux
-if is_need_grub_extlinux; then
-    # win 使用外部 grub
-    if is_in_windows; then
-        install_grub_win
-    else
-        # linux efi 使用外部 grub，因为
-        # 1. 原系统 grub 可能没有去除 aarch64 内核 magic number 校验
-        # 2. 原系统可能不是用 grub
-        if is_efi; then
-            install_grub_linux_efi
-        fi
-    fi
-
-    # 寻找 grub.cfg / extlinux.conf
-    if is_in_windows; then
-        if is_efi; then
-            grub_cfg=/cygdrive/$c/grub.cfg
-        else
-            grub_cfg=/cygdrive/$c/grub/grub.cfg
-        fi
-    else
-        # linux
-        if is_efi; then
-            # 现在 linux-efi 是使用 reinstall 目录下的 grub
-            # shellcheck disable=SC2046
-            efi_reinstall_dir=$(find $(get_maybe_efi_dirs_in_linux) -type d -name "reinstall" | head -1)
-            grub_cfg=$efi_reinstall_dir/grub.cfg
-        else
-            if is_mbr_using_grub; then
-                if is_have_cmd update-grub; then
-                    # alpine debian ubuntu
-                    grub_cfg=$(grep -o '[^ ]*grub.cfg' "$(get_cmd_path update-grub)" | head -1)
-                else
-                    # 找出主配置文件（含有menuentry|blscfg）
-                    # 现在 efi 用下载的 grub，因此不需要查找 efi 目录
-                    grub_cfg=$(find_grub_extlinux_cfg '/boot/grub*' grub.cfg 'menuentry|blscfg')
-                fi
-            else
-                # extlinux
-                extlinux_cfg=$(find_grub_extlinux_cfg /boot extlinux.conf LINUX)
-            fi
-        fi
-    fi
-
-    # 找到 grub 程序的前缀
-    # 并重新生成 grub.cfg
-    # 因为有些机子例如hython debian的grub.cfg少了40_custom 41_custom
-    if is_use_local_grub; then
-        if is_have_cmd grub2-mkconfig; then
-            grub=grub2
-        elif is_have_cmd grub-mkconfig; then
-            grub=grub
-        else
-            error_and_exit "grub not found"
-        fi
-
-        # nixos 手动执行 grub-mkconfig -o /boot/grub/grub.cfg 会丢失系统启动条目
-        # 正确的方法是修改 configuration.nix 的 boot.loader.grub.extraEntries
-        # 但是修改 configuration.nix 不是很好，因此改成修改 grub.cfg
-        if [ -x /nix/var/nix/profiles/system/bin/switch-to-configuration ]; then
-            # 生成 grub.cfg
-            /nix/var/nix/profiles/system/bin/switch-to-configuration boot
-            # 手动启用 41_custom
-            nixos_grub_home="$(dirname "$(readlink -f "$(get_cmd_path grub-mkconfig)")")/.."
-            $nixos_grub_home/etc/grub.d/41_custom >>$grub_cfg
-        elif is_have_cmd update-grub; then
-            update-grub
-        else
-            $grub-mkconfig -o $grub_cfg
-        fi
-    fi
-
-    # 重新生成 extlinux.conf
-    if is_use_local_extlinux; then
-        if is_have_cmd update-extlinux; then
-            update-extlinux
-        fi
-    fi
-
-    # 选择用 custom.cfg (linux-bios) 还是 grub.cfg (linux-efi / win)
-    if is_use_local_grub; then
-        target_cfg=$(dirname $grub_cfg)/custom.cfg
-    else
-        target_cfg=$grub_cfg
-    fi
-
-    # 找到 /reinstall-vmlinuz /reinstall-initrd 的绝对路径
-    if is_in_windows; then
-        # dir=/cygwin/
-        dir=$(cygpath -m / | cut -d: -f2-)/
-    else
-        # extlinux + 单独的 boot 分区
-        # 把内核文件放在 extlinux.conf 所在的目录
-        if is_use_local_extlinux && is_boot_in_separate_partition; then
-            dir=
-        else
-            # 获取当前系统根目录在 btrfs 中的绝对路径
-            if is_os_in_btrfs; then
-                # btrfs subvolume show /
-                # 输出可能是 / 或 root 或 @/.snapshots/1/snapshot
-                dir=$(btrfs subvolume show / | head -1)
-                if ! [ "$dir" = / ]; then
-                    dir="/$dir/"
-                fi
-            else
-                dir=/
-            fi
-        fi
-    fi
-
-    vmlinuz=${dir}reinstall-vmlinuz
-    initrd=${dir}reinstall-initrd
-
-    # 设置 linux initrd 命令
-    # efi 现在统一用下载的 opensuse grub（install_grub_linux_efi），
-    # 它不区分 linux/linuxefi，所以这里不再需要 efi 后缀
-    if is_use_local_extlinux; then
-        linux_cmd=LINUX
-        initrd_cmd=INITRD
-    else
-        linux_cmd=linux
-        initrd_cmd=initrd
-    fi
-
-    # 设置 cmdline
-    find_main_disk
-    build_cmdline
-
-    if is_use_local_extlinux; then
-        info extlinux
-        echo $extlinux_cfg
-        extlinux_dir="$(dirname $extlinux_cfg)"
-
-        # 不起作用
-        # 好像跟 extlinux --once 有冲突
-        sed -i "/^MENU HIDDEN/d" $extlinux_cfg
-        sed -i "/^TIMEOUT /d" $extlinux_cfg
-
-        del_empty_lines <<EOF | tee -a $extlinux_cfg
-TIMEOUT 5
-LABEL reinstall
-  MENU LABEL $(get_entry_name)
-  $linux_cmd $vmlinuz
-  $initrd_cmd $initrd
-  $([ -n "$cmdline" ] && echo "APPEND $cmdline")
-EOF
-        # 设置重启引导项
-        extlinux --once=reinstall $extlinux_dir
-
-        # 复制文件到 extlinux 工作目录
-        if is_boot_in_separate_partition; then
-            info "copying files to $extlinux_dir"
-            cp -f /reinstall-vmlinuz /reinstall-initrd $extlinux_dir
-        fi
-    else
-        # cloudcone 从光驱的 grub 启动，再加载硬盘的 grub.cfg
-        # menuentry "Grub 2" --id grub2 {
-        #         set root=(hd0,msdos1)
-        #         configfile /boot/grub2/grub.cfg
-        # }
-
-        # 加载后 $prefix 依然是光驱的 (hd96)/boot/grub
-        # 导致找不到 $prefix 目录的 grubenv，因此读取不到 next_entry
-        # 以下方法为 cloudcone 重新加载 grubenv
-
-        # 需查找 2*2 个文件夹
-        # 分区：系统 / boot
-        # 文件夹：grub / grub2
-        # shellcheck disable=SC2121,SC2154
-        # cloudcone debian 能用但 ubuntu 模板用不了
-        # ubuntu 模板甚至没显示 reinstall menuentry
-        load_grubenv_if_not_loaded() {
-            if ! [ -s $prefix/grubenv ]; then
-                for dir in /boot/grub /boot/grub2 /grub /grub2; do
-                    set grubenv="($root)$dir/grubenv"
-                    if [ -s $grubenv ]; then
-                        load_env --file $grubenv
-                        if [ "${next_entry}" ]; then
-                            set default="${next_entry}"
-                            set next_entry=
-                            save_env --file $grubenv next_entry
-                        else
-                            set default="0"
-                        fi
-                        return
-                    fi
-                done
-            fi
-        }
-
-        # 生成 grub 配置
-        # 实测 centos 7 lvm 要手动加载 lvm 模块
-        info grub
-        echo $target_cfg
-
-        get_function_content load_grubenv_if_not_loaded >$target_cfg
-
-        # 原系统为 openeuler 云镜像，需要添加 --unrestricted，否则要输入密码
-        del_empty_lines <<EOF | del_comment_lines | tee -a $target_cfg
-set timeout_style=menu
-set timeout=5
-menuentry "$(get_entry_name)" --unrestricted {
-    $(! is_in_windows && echo 'insmod lvm')
-    $(is_os_in_btrfs && echo 'set btrfs_relative_path=n')
-    # fedora efi 没有 load_video
-    insmod all_video
-    # set gfxmode=800x600
-    # set gfxpayload=keep
-    # terminal_output gfxterm 在 vultr 上会花屏
-    # terminal_output console
-    search --no-floppy --file --set=root $vmlinuz
-    $linux_cmd $vmlinuz $cmdline
-    $initrd_cmd $initrd
-}
-EOF
-
-        # 设置重启引导项
-        if is_use_local_grub; then
-            $grub-reboot "$(get_entry_name)"
-        fi
-    fi
-fi
+install_boot_entry
 
 info 'info'
 echo "$distro $releasever"

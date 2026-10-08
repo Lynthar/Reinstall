@@ -13,6 +13,7 @@ on:
       - "tests/check_sync_time.sh"
       - "tests/check_find_xda.sh"
       - "tests/check_ifupdown_config.sh"
+      - "tests/check_boot_entry.sh"
       - "tests/lib.sh"
   pull_request:
     paths:
@@ -26,12 +27,13 @@ on:
       - "tests/check_sync_time.sh"
       - "tests/check_find_xda.sh"
       - "tests/check_ifupdown_config.sh"
+      - "tests/check_boot_entry.sh"
       - "tests/lib.sh"
 permissions:
   contents: read
 jobs:
   tests:
-    name: 分区角色、镜像验签、Debian 源、DD 管道、时间同步、选盘与网络配置
+    name: 分区角色、镜像验签、Debian 源、DD 管道、时间同步、选盘、网络配置与引导项
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,6 +45,7 @@ jobs:
       - run: bash tests/check_sync_time.sh
       - run: bash tests/check_find_xda.sh
       - run: bash tests/check_ifupdown_config.sh
+      - run: bash tests/check_boot_entry.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest
@@ -61,6 +64,13 @@ jobs:
         run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" debian
       - name: ubuntu
         run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" ubuntu
+      - name: BootNext points at the entry whose grub.cfg was written
+        run: |
+          entries=$(sudo efibootmgr)
+          next=$(sed -n 's/^BootNext: //p' <<<"$entries")
+          test -n "$next"
+          grep -q "^Boot$next\* reinstall (ubuntu" <<<"$entries"
+          sudo grep -q '^menuentry "reinstall (ubuntu' /boot/efi/EFI/reinstall/grub.cfg
       - name: initrd carries the repository files trans.sh uses
         run: |
           mkdir /tmp/initrd

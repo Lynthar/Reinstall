@@ -38,6 +38,7 @@ jobs:
           shellcheck tests/check_dd_pipeline.sh
           shellcheck tests/check_sync_time.sh
           shellcheck tests/check_find_xda.sh
+          shellcheck tests/check_boot_entry.sh
           shellcheck tests/check_mirrors.sh
       - name: Check for calls to undefined functions
         run: |
