@@ -7,26 +7,12 @@ set -u
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 reinstall=$repo/reinstall.sh
-
-# Pulls one function out of reinstall.sh, closing brace included; nested
-# definitions are matched by their own indentation.
-extract_fn() {
-    awk -v name="$1" '
-        !found && match($0, "^ *" name "\\(\\) \\{$") {
-            found = 1
-            indent = substr($0, 1, index($0, name) - 1)
-        }
-        found { print }
-        found && $0 == indent "}" { exit }
-    ' "$reinstall" | grep . || {
-        echo "cannot extract $1() from reinstall.sh" >&2
-        exit 2
-    }
-}
+# shellcheck source=lib.sh
+. "$repo/tests/lib.sh"
 
 # Versions verify_os_name() accepts for a distro, one per line.
 versions_of() {
-    extract_fn verify_os_name | sed -n -E "s/^ *'$1 +([0-9.|]+)'.*/\\1/p" | tr '|' '\n' | grep . || {
+    extract_fn "$reinstall" verify_os_name | sed -n -E "s/^ *'$1 +([0-9.|]+)'.*/\\1/p" | tr '|' '\n' | grep . || {
         echo "no version list for $1 in verify_os_name()" >&2
         exit 2
     }
@@ -35,7 +21,7 @@ versions_of() {
 # Codename setos_<distro>() maps a version to.
 codename_of() {
     local v=${2//./\\.}
-    extract_fn "setos_$1" | sed -n -E "s/^ *$v\\) codename=([a-z]+) ;;.*/\\1/p" | grep . || {
+    extract_fn "$reinstall" "setos_$1" | sed -n -E "s/^ *$v\\) codename=([a-z]+) ;;.*/\\1/p" | grep . || {
         echo "no codename for $1 $2 in setos_$1()" >&2
         exit 2
     }

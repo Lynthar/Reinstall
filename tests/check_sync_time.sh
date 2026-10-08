@@ -7,18 +7,8 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 trans=$repo/trans.sh
-
-# Pulls one top-level function out of trans.sh, closing brace included.
-extract_fn() {
-    awk -v name="$1" '
-        index($0, name "() {") == 1 { found = 1 }
-        found { print }
-        found && $0 == "}" { exit }
-    ' "$trans" | grep . || {
-        echo "cannot extract $1() from trans.sh" >&2
-        exit 1
-    }
-}
+# shellcheck source=lib.sh
+. "$repo/tests/lib.sh"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -51,7 +41,7 @@ grep() {
     command grep "$@"
 }
 STUBS
-extract_fn sync_time >"$work/fns.sh"
+extract_fn "$trans" sync_time >"$work/fns.sh"
 
 # Called exactly as trans.sh calls it: the sync is allowed to fail.
 cat >"$work/case.sh" <<CASE
@@ -63,16 +53,6 @@ http_mode=\$2
 sync_time || true
 CASE
 
-failures=0
-check() {
-    if [ "$2" = "$3" ]; then
-        echo "    ok   $1 = $2"
-    else
-        echo "    FAIL $1: expected '$3', got '$2'" >&2
-        failures=$((failures + 1))
-    fi
-}
-
 # run_case <shell command> <ntp mode> <http mode>; the log is what is asserted on.
 run_case() {
     local shell=$1
@@ -80,11 +60,6 @@ run_case() {
     $shell "$work/case.sh" "$2" "$3" >/dev/null 2>"$work/log"
 }
 said() { grep -q "$1" "$work/log" && echo yes || echo no; }
-
-shells=(bash)
-if busybox ash -c : 2>/dev/null; then
-    shells+=("busybox ash")
-fi
 
 for shell in "${shells[@]}"; do
     run_case "$shell" ok ok
@@ -98,9 +73,4 @@ for shell in "${shells[@]}"; do
     check "$shell / both fail: says so" "$(said 'Time sync failed')" yes
 done
 
-if [ "$failures" != 0 ]; then
-    echo "check_sync_time: $failures assertion(s) failed" >&2
-    exit 1
-fi
-echo "check_sync_time: ok"
-exit 0
+finish

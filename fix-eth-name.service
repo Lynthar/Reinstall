@@ -5,14 +5,8 @@ ConditionPathExists=/fix-eth-name.sh
 After=dbus.service
 
 Before=cloud-init-local.service
-Before=network.service
 Before=networking.service
 Before=systemd-networkd.service
-Before=NetworkManager.service
-Before=wickedd-auto4.service
-Before=wickedd-dhcp4.service
-Before=wickedd-dhcp6.service
-Before=wickedd.service
 
 Before=network.target
 

@@ -6,29 +6,15 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 trans=$repo/trans.sh
+# shellcheck source=lib.sh
+. "$repo/tests/lib.sh"
 
-skip() {
-    echo "SKIP check_part_layout: $1"
-    exit 0
-}
 
 [ "$(id -u)" = 0 ] || skip "not root"
 [ -e /dev/loop-control ] || skip "no loop devices"
 for cmd in losetup parted partprobe blkid mkfs.ext4 mkfs.fat truncate; do
     command -v "$cmd" >/dev/null || skip "missing $cmd"
 done
-
-# Pulls one top-level function out of trans.sh, closing brace included.
-extract_fn() {
-    awk -v name="$1" '
-        $0 ~ "^" name "\\(\\) \\{" { found = 1 }
-        found { print }
-        found && /^\}$/ { exit }
-    ' "$trans" | grep . || {
-        echo "cannot extract $1() from trans.sh" >&2
-        exit 1
-    }
-}
 
 harness=$(mktemp -d)
 trap 'losetup -d "${dev:-}" 2>/dev/null || true; rm -rf "$harness"' EXIT
@@ -54,18 +40,8 @@ update_part() {
 }
 STUBS
 for fn in is_efi is_use_cloud_image get_disk_size is_xda_gt_2t create_part; do
-    extract_fn "$fn" >>"$harness/create_part.sh"
+    extract_fn "$trans" "$fn" >>"$harness/create_part.sh"
 done
-
-failures=0
-check() {
-    if [ "$2" = "$3" ]; then
-        echo "    ok   $1 = $2"
-    else
-        echo "    FAIL $1: expected '$3', got '$2'" >&2
-        failures=$((failures + 1))
-    fi
-}
 
 # The table is read from the image file, not the loop device: parted opens a device
 # for writing, and udev answers that close by re-reading the partition table, which
@@ -136,9 +112,4 @@ for boot_mode in efi bios; do
     end_case
 done
 
-if [ "$failures" != 0 ]; then
-    echo "check_part_layout: $failures assertion(s) failed" >&2
-    exit 1
-fi
-echo "check_part_layout: ok"
-exit 0
+finish

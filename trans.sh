@@ -332,35 +332,21 @@ find_xda() {
         error_and_exit "cmdline main_disk is empty."
     fi
 
-    # busybox fdisk/lsblk/blkid 不显示 mbr 分区表 id
-    # 可用以下工具：
-    # fdisk 在 util-linux-misc 里面，占用大
-    # sfdisk 占用小
-    # lsblk
-    # blkid
-
-    tool=sfdisk
-
-    is_have_cmd $tool && need_install_tool=false || need_install_tool=true
+    # busybox 的 fdisk / lsblk / blkid 都不显示 mbr 分区表 id，sfdisk 占用最小
+    is_have_cmd sfdisk && need_install_tool=false || need_install_tool=true
     if $need_install_tool; then
-        apk add $tool
+        apk add sfdisk
     fi
 
-    if [ "$tool" = sfdisk ]; then
-        # sfdisk
-        for disk in $(get_all_disks); do
-            if sfdisk --disk-id "/dev/$disk" | sed 's/0x//' | grep -ix "$main_disk"; then
-                # 克隆盘的分区表 id 相同，取第一个匹配可能整盘擦错
-                if [ -n "$xda" ]; then
-                    error_and_exit "Disk id $main_disk is on both $xda and $disk."
-                fi
-                xda=$disk
+    for disk in $(get_all_disks); do
+        if sfdisk --disk-id "/dev/$disk" | sed 's/0x//' | grep -ix "$main_disk"; then
+            # 克隆盘的分区表 id 相同，取第一个匹配可能整盘擦错
+            if [ -n "$xda" ]; then
+                error_and_exit "Disk id $main_disk is on both $xda and $disk."
             fi
-        done
-    else
-        # lsblk
-        xda=$(lsblk --nodeps -rno NAME,PTUUID | grep -iw "$main_disk" | awk '{print $1}')
-    fi
+            xda=$disk
+        fi
+    done
 
     if [ -n "$xda" ]; then
         set_config xda "$xda"
@@ -369,7 +355,7 @@ find_xda() {
     fi
 
     if $need_install_tool; then
-        apk del $tool
+        apk del sfdisk
     fi
 }
 
@@ -430,7 +416,7 @@ EOF
 }
 
 umount_all() {
-    dirs="/mnt /os /iso /wim /installer /nbd /nbd-boot /nbd-efi /nbd-test /root /nix"
+    dirs="/mnt /os /installer /nbd /nbd-boot /nbd-efi /nbd-test /root"
     regex=$(echo "$dirs" | sed 's, ,|,g')
     if mounts=$(mount | grep -Ew "on $regex" | awk '{print $3}' | tac); then
         for mount in $mounts; do
@@ -442,16 +428,9 @@ umount_all() {
 
 # 可能脚本不是首次运行，先清理之前的残留
 clear_previous() {
-    if is_have_cmd vgchange; then
-        umount -R /os /nbd || true
-        vgchange -an
-        apk add device-mapper
-        dmsetup remove_all
-    fi
     disconnect_qcow
-    # 安装 arch 有 gpg-agent 进程驻留
+    # fetch_qcow_hash 验签后 gpg-agent 会驻留，重跑前清掉
     pkill gpg-agent || true
-    rc-service -q --ifexists --ifstarted nix-daemon stop
     swapoff -a
     umount_all
 
@@ -502,17 +481,8 @@ set_config() {
     printf '%s' "$2" >"/configs/$1"
 }
 
-# ubuntu 安装版、el/ol 安装版不使用该密码
 get_password_linux_sha512() {
     get_config password-linux-sha512
-}
-
-get_password_plaintext() {
-    get_config password-plaintext
-}
-
-is_password_plaintext() {
-    get_password_plaintext >/dev/null 2>&1
 }
 
 show_netconf() {
@@ -960,21 +930,6 @@ iface $ethx inet6 static
     address $ipv6_addr
     gateway $ipv6_gateway
 EOF
-            # debian 9
-            # ipv4 支持静态 onlink 网关
-            # ipv6 不支持静态 onlink 网关，需使用 post-up 添加，未测试动态
-            # ipv6 也不支持直接 ip route add default via xxx onlink
-            if [ "$distro" = debian ] && [ "$releasever" -le 9 ]; then
-                # debian 添加 gateway 失败时不会执行 post-up
-                # 因此 gateway post-up 只能二选一
-
-                # 注释最后一行，也就是 gateway
-                sed -Ei '$s/^( *)/\1# /' "$conf_file"
-                cat <<EOF >>$conf_file
-    post-up ip route add $ipv6_gateway dev $ethx
-    post-up ip route add default via $ipv6_gateway dev $ethx
-EOF
-            fi
         fi
 
         # dns
@@ -1785,26 +1740,9 @@ remove_cloud_init() {
         fi
     done
 
-    for pkg_mgr in dnf yum zypper apt-get; do
-        if is_have_cmd_on_disk $os_dir $pkg_mgr; then
-            case $pkg_mgr in
-            dnf | yum)
-                chroot $os_dir $pkg_mgr remove -y cloud-init
-                rm -f $os_dir/etc/cloud/cloud.cfg.rpmsave
-                ;;
-            zypper)
-                # 加上 -u 才会删除依赖
-                chroot $os_dir zypper remove -y -u cloud-init cloud-init-config-suse
-                ;;
-            apt-get)
-                # ubuntu 25.04 开始有 cloud-init-base
-                chroot_apt_remove $os_dir cloud-init cloud-init-base
-                chroot_apt_autoremove $os_dir
-                ;;
-            esac
-            break
-        fi
-    done
+    # ubuntu 25.04 开始有 cloud-init-base
+    chroot_apt_remove $os_dir cloud-init cloud-init-base
+    chroot_apt_autoremove $os_dir
 }
 
 modify_linux() {
@@ -1925,11 +1863,6 @@ modify_linux() {
         # 另外 debian iso 不会安装 rdnssd
         keep_now_resolv_conf $os_dir
     fi
-
-
-    # arch 云镜像
-
-    # gentoo 云镜像
 
     basic_init $os_dir
 
@@ -2090,47 +2023,7 @@ change_root_password() {
     os_dir=$1
 
     info 'change root password'
-
-    if is_password_plaintext; then
-        pam_d=$os_dir/etc/pam.d
-
-        [ -f $pam_d/chpasswd ] && has_pamd_chpasswd=true || has_pamd_chpasswd=false
-
-        if $has_pamd_chpasswd; then
-            cp $pam_d/chpasswd $pam_d/chpasswd.orig
-
-            # cat /etc/pam.d/chpasswd
-            # @include common-password
-
-            # cat /etc/pam.d/chpasswd
-            # #%PAM-1.0
-            # auth       include      system-auth
-            # account    include      system-auth
-            # password   substack     system-auth
-            # -password   optional    pam_gnome_keyring.so use_authtok
-            # password   substack     postlogin
-
-            # 通过 /etc/pam.d/chpasswd 找到 /etc/pam.d/system-auth 或者 /etc/pam.d/system-auth
-            # 再找到有 password 和 pam_unix.so 的行，并删除 use_authtok，写入 /etc/pam.d/chpasswd
-            files=$(grep -E '^(password|@include)' $pam_d/chpasswd | awk '{print $NF}' | sort -u)
-            for file in $files; do
-                if [ -f "$pam_d/$file" ] && line=$(grep ^password "$pam_d/$file" | grep -F pam_unix.so); then
-                    echo "$line" | sed 's/use_authtok//' >$pam_d/chpasswd
-                    break
-                fi
-            done
-        fi
-
-        # 分两行写，不然遇到错误不会终止
-        plaintext=$(get_password_plaintext)
-        echo "root:$plaintext" | chroot $os_dir chpasswd
-
-        if $has_pamd_chpasswd; then
-            mv $pam_d/chpasswd.orig $pam_d/chpasswd
-        fi
-    else
-        echo "root:$(get_password_linux_sha512)" | chroot $os_dir chpasswd -e
-    fi
+    echo "root:$(get_password_linux_sha512)" | chroot $os_dir chpasswd -e
 }
 
 download_qcow() {
@@ -2277,45 +2170,9 @@ get_part_size_mb_for_file_size_b() {
 }
 
 get_cloud_image_part_size() {
-    # 7
-    # https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2c 400m
-
-    # 8
-    # https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2 600m
-    # https://download.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base.latest.x86_64.qcow2 1.8g
-    # https://yum.oracle.com/templates/OracleLinux/OL8/u9/x86_64/OL8U9_x86_64-kvm-b219.qcow2 1g
-    # https://rhel-8.10-x86_64-kvm.qcow2 1g
-
-    # 9
-    # https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2 1.2g
-    # https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2 600m
-    # https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2 600m
-    # https://yum.oracle.com/templates/OracleLinux/OL9/u3/x86_64/OL9U3_x86_64-kvm-b220.qcow2 600m
-    # https://rhel-9.4-x86_64-kvm.qcow2 900m
-
-    # 10
-    # https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2 900m
-
-    # https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/cloud/nocloud_alpine-3.19.1-x86_64-uefi-cloudinit-r0.qcow2 200m
-    # https://kali.download/cloud-images/current/kali-linux-2024.1-cloud-genericcloud-amd64.tar.xz 200m
-    # https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2 300m
-    # https://download.opensuse.org/distribution/leap/15.5/appliances/openSUSE-Leap-15.5-Minimal-VM.aarch64-Cloud.qcow2 300m
-    # https://mirror.fcix.net/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2 400m
-    # https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2 500m
     # https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2 500m
     # https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img 500m
-    # https://gentoo.osuosl.org/experimental/amd64/openstack/gentoo-openstack-amd64-systemd-latest.qcow2 800m
-
-    # openeuler 是 .qcow2.xz，要解压后才知道 qcow2 大小
-    if [ "$distro" = openeuler ]; then
-        # openeuler 20.03 3g
-        if [ "$releasever" = 20.03 ]; then
-            echo 3GiB
-        else
-            echo 2GiB
-        fi
-    elif size_bytes=$(get_http_file_size "$img"); then
-        # 缩小 btrfs 需要写 qcow2 ，实测写入后只多了 1M，因此不用特殊处理
+    if size_bytes=$(get_http_file_size "$img"); then
         echo "$(get_part_size_mb_for_file_size_b $size_bytes)MiB"
     else
         # 如果没获取到文件大小
@@ -2472,45 +2329,32 @@ EOF
             chroot_apt_install $os_dir $fw_pkgs
         fi
 
-        # 网络配置
-        # 18.04+ netplan
-        if is_have_cmd_on_disk $os_dir netplan; then
-            # 避免删除 cloud-init 后，minimal 镜像的 netplan.io 被 autoremove
-            chroot $os_dir apt-mark manual netplan.io
+        # 网络配置：18.04 起都是 netplan
+        # 避免删除 cloud-init 后，minimal 镜像的 netplan.io 被 autoremove
+        chroot $os_dir apt-mark manual netplan.io
 
             # 生成 cloud-init 网络配置
-            create_cloud_init_network_config $os_dir/net.cfg
+        create_cloud_init_network_config $os_dir/net.cfg
 
-            # ubuntu 18.04 cloud-init 版本 23.1.2，因此不用处理 onlink
+        # ubuntu 18.04 cloud-init 版本 23.1.2，因此不用处理 onlink
 
-            # 如果不是输出到 / 则不会生成 50-cloud-init.yaml
-            # 注意比较多了什么东西
-            if false; then
-                chroot $os_dir cloud-init devel net-convert \
-                    -p /net.cfg -k yaml -d /out -D ubuntu -O netplan
-                sed -Ei "/^[[:space:]]+set-name:/d" $os_dir/out/etc/netplan/50-cloud-init.yaml
-                cp $os_dir/out/etc/netplan/50-cloud-init.yaml $os_dir/etc/netplan/
+        # 如果不是输出到 / 则不会生成 50-cloud-init.yaml
+        # 注意比较多了什么东西
+        if false; then
+            chroot $os_dir cloud-init devel net-convert \
+                -p /net.cfg -k yaml -d /out -D ubuntu -O netplan
+            sed -Ei "/^[[:space:]]+set-name:/d" $os_dir/out/etc/netplan/50-cloud-init.yaml
+            cp $os_dir/out/etc/netplan/50-cloud-init.yaml $os_dir/etc/netplan/
 
-                # 清理
-                rm -rf $os_dir/net.cfg $os_dir/out
-            else
-                chroot $os_dir cloud-init devel net-convert \
-                    -p /net.cfg -k yaml -d / -D ubuntu -O netplan
-                sed -Ei "/^[[:space:]]+set-name:/d" $os_dir/etc/netplan/50-cloud-init.yaml
-
-                # 清理
-                rm -rf $os_dir/net.cfg
-            fi
+            # 清理
+            rm -rf $os_dir/net.cfg $os_dir/out
         else
-            # 避免删除 cloud-init 后 ifupdown 被 autoremove
-            chroot $os_dir apt-mark manual ifupdown
+            chroot $os_dir cloud-init devel net-convert \
+                -p /net.cfg -k yaml -d / -D ubuntu -O netplan
+            sed -Ei "/^[[:space:]]+set-name:/d" $os_dir/etc/netplan/50-cloud-init.yaml
 
-            # 16.04 镜像用 ifupdown/networking 管理网络
-            # 要安装 resolveconf，不然 /etc/resolv.conf 为空
-            chroot_apt_install $os_dir resolvconf
-            ln -sf /run/resolvconf/resolv.conf $os_dir/etc/resolv.conf.orig
-
-            create_ifupdown_config $os_dir/etc/network/interfaces
+            # 清理
+            rm -rf $os_dir/net.cfg
         fi
 
         # 自带的 60-cloudimg-settings.conf 禁止了 PasswordAuthentication
@@ -2567,96 +2411,35 @@ EOF
         restore_resolv_conf $os_dir
     }
 
-    efi_mount_opts=$(
-        case "$distro" in
-        ubuntu) echo "umask=0077" ;;
-        *) echo "defaults,uid=0,gid=0,umask=077,shortname=winnt" ;;
-        esac
-    )
+    efi_mount_opts=umask=0077
 
-    # yum/apt 安装软件时需要的内存总大小
-    need_ram=$(
-        case "$distro" in
-        ubuntu) echo 1024 ;;
-        *) echo 2048 ;;
-        esac
-    )
+    # apt 安装软件时需要的内存总大小
+    need_ram=1024
 
     connect_qcow
 
-    # 镜像分区格式
-    # centos/rocky/almalinux/rhel: xfs
-    # oracle x86_64:          lvm + xfs
-    # oracle aarch64 cloud:   xfs
-    # alibaba cloud linux 3:  ext4
-
-    is_lvm_image=false
-    if lsblk -f /dev/nbd0p* | grep LVM2_member; then
-        is_lvm_image=true
-        apk add lvm2
-        lvscan
-        vg=$(pvs | grep /dev/nbd0p | awk '{print $2}')
-        lvchange -ay "$vg"
-    fi
-
-    mount_nouuid() {
-        part_fstype=
-        for arg in "$@"; do
-            case "$arg" in
-            /dev/*)
-                part_fstype=$(lsblk -no FSTYPE "$arg")
-                break
-                ;;
-            esac
-        done
-
-        case "$part_fstype" in
-        xfs) mount -o nouuid "$@" ;;
-        *) mount "$@" ;;
-        esac
-    }
-
-    # 可以直接选择最后一个分区为系统分区?
-    # almalinux9 boot 分区的类型不是规定的 uuid
-    # openeuler boot 分区是 vfat 格式
-    # openeuler arm 25.09 是 mbr 分区表, efi boot 是同一个分区，vfat 格式
-
     info "qcow2 Partitions check"
 
-    # 检测分区表类型
     partition_table_format=$(get_partition_table_format /dev/nbd0)
-    # shellcheck disable=SC2034
-    need_reinstall_grub_efi=false
-    if is_efi && [ "$partition_table_format" = "msdos" ]; then
-        # shellcheck disable=SC2034
-        need_reinstall_grub_efi=true
-    fi
 
     # 通过检测文件判断是什么分区
     os_part='' boot_part='' efi_part=''
     mkdir -p /nbd-test
     for part in $(lsblk /dev/nbd0p* --sort SIZE -no NAME,FSTYPE |
-        grep -E ' (ext4|xfs|fat|vfat)$' | awk '{print $1}' | tac); do
-        mapper_part=$part
-        if $is_lvm_image && [ -e /dev/mapper/$part ]; then
-            mapper_part=mapper/$part
-        fi
-
-        if mount_nouuid -o ro /dev/$mapper_part /nbd-test; then
+        grep -E ' (ext4|fat|vfat)$' | awk '{print $1}' | tac); do
+        if mount -o ro /dev/$part /nbd-test; then
             if { ls /nbd-test/etc/os-release || ls /nbd-test/*/etc/os-release; } 2>/dev/null; then
-                os_part=$mapper_part
+                os_part=$part
             fi
             # shellcheck disable=SC2010
             # 当 boot 作为独立分区时，vmlinuz 等文件在根目录
             # 当 boot 不是独立分区时，vmlinuz 等文件在 /boot 目录
             if ls /nbd-test/ /nbd-test/boot/ 2>/dev/null | grep -Ei '^(vmlinuz|initrd|initramfs)'; then
-                boot_part=$mapper_part
+                boot_part=$part
             fi
-            # mbr + efi 引导 ，分区表没有 esp guid
-            # 因此需要用 efi 文件判断是否 efi 分区
             # efi 文件可能在 efi 目录的子目录，子目录层数不定
             if find /nbd-test/ -type f -ipath '/nbd-test/EFI/*.efi' 2>/dev/null | grep .; then
-                efi_part=$mapper_part
+                efi_part=$part
             fi
             umount /nbd-test
         fi
@@ -2672,12 +2455,6 @@ EOF
     echo "Part Boot: $boot_part"
     echo "---"
 
-    # 分区寻找方式
-    # 系统/分区          cmdline:root  fstab:efi
-    # rocky             LABEL=rocky   LABEL=EFI
-    # ubuntu            PARTUUID      LABEL=UEFI
-    # 其他el/ol         UUID           UUID
-
     IFS=, read -r os_part_uuid os_part_label os_part_fstype \
         < <(lsblk /dev/$os_part -rno UUID,LABEL,FSTYPE | tr ' ' ,)
 
@@ -2689,16 +2466,12 @@ EOF
     mkdir -p /nbd /nbd-boot /nbd-efi
 
     # 使用目标系统的格式化程序
-    # centos8 如果用alpine格式化xfs，grub2-mkconfig和grub2里面都无法识别xfs分区
-    mount_nouuid /dev/$os_part /nbd/
+    mount /dev/$os_part /nbd/
     mount_pseudo_fs /nbd/
     case "$os_part_fstype" in
     ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" /dev/$xda*2 ;;
-    xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid /dev/$xda*2 ;;
     esac
     umount -R /nbd/
-
-    # TODO: ubuntu 镜像缺少 mkfs.fat/vfat/dosfstools? initrd 不需要检查fs完整性？
 
     # 创建并挂载 /os
     mkdir -p /os
@@ -2719,14 +2492,14 @@ EOF
 
     # 复制系统分区
     echo Copying os partition...
-    mount_nouuid -o ro /dev/$os_part /nbd/
+    mount -o ro /dev/$os_part /nbd/
     cp -a /nbd/* /os/
     umount /nbd/
 
     # 复制独立的boot分区，如果有
     if [ -n "$boot_part" ] && ! [ "$boot_part" = "$os_part" ]; then
         echo Copying boot partition...
-        mount_nouuid -o ro /dev/$boot_part /nbd-boot/
+        mount -o ro /dev/$boot_part /nbd-boot/
         cp -a /nbd-boot/* /os/boot/
         umount /nbd-boot/
     fi
@@ -2742,10 +2515,6 @@ EOF
 
     # 断开 qcow 并删除 qemu-img
     info "Disconnecting qcow2"
-    if is_have_cmd vgchange; then
-        vgchange -an
-        apk del lvm2
-    fi
     disconnect_qcow
     apk del qemu-img
 
@@ -2814,47 +2583,6 @@ dd_qcow() {
     if true; then
         connect_qcow
 
-        partition_table_format=$(get_partition_table_format /dev/nbd0)
-        orig_nbd_virtual_size=$(get_disk_size /dev/nbd0)
-
-        # 检查最后一个分区是否是 btrfs
-        # 即使awk结果为空，返回值也是0，加上 grep . 检查是否结果为空
-        if part_num=$(parted /dev/nbd0 -s print | awk NF | tail -1 | grep btrfs | awk '{print $1}' | grep .); then
-            apk add btrfs-progs
-            mkdir -p /mnt/btrfs
-            mount /dev/nbd0p$part_num /mnt/btrfs
-
-            # 回收空数据块
-            btrfs device usage /mnt/btrfs
-            btrfs balance start -dusage=0 /mnt/btrfs
-            btrfs device usage /mnt/btrfs
-
-            # 计算可以缩小的空间
-            free_bytes=$(btrfs device usage /mnt/btrfs -b | grep Unallocated: | awk '{print $2}')
-            reserve_bytes=$((100 * 1024 * 1024)) # 预留 100M 可用空间
-            skrink_bytes=$((free_bytes - reserve_bytes))
-
-            if [ $skrink_bytes -gt 0 ]; then
-                # 缩小文件系统
-                btrfs filesystem resize -$skrink_bytes /mnt/btrfs
-                # 缩小分区
-                part_start=$(parted /dev/nbd0 -s 'unit b print' | awk "\$1==$part_num {print \$2}" | sed 's/B//')
-                part_size=$(btrfs filesystem usage /mnt/btrfs -b | grep 'Device size:' | awk '{print $3}')
-                part_end=$((part_start + part_size - 1))
-                umount /mnt/btrfs
-                printf "yes" | parted /dev/nbd0 resizepart $part_num ${part_end}B ---pretend-input-tty
-
-                # 缩小 qcow2
-                disconnect_qcow
-                qemu-img resize --shrink $qcow_file $((part_end + 1))
-
-                # 重新连接
-                connect_qcow
-            else
-                umount /mnt/btrfs
-            fi
-        fi
-
         # 显示分区
         lsblk -o NAME,SIZE,FSTYPE,LABEL /dev/nbd0
 
@@ -2896,68 +2624,7 @@ dd_qcow() {
     dd if=/first-1M of=/dev/$xda
     rm -f /first-1M
 
-    # gpt 分区表开头记录了备份分区表的位置
-    # 如果 qcow2 虚拟容量 大于 实际硬盘容量
-    # 备份分区表的位置 将超出实际硬盘容量的大小
-    # partprobe 会报错
-    # Error: Invalid argument during seek for read on /dev/vda
-    # parted 也无法正常工作
-    # 需要提前修复分区表
-
-    # 目前只有这个例子，因为其他 qcow2 虚拟容量最多 5g，是设定支持的容量
-    # openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2 容量是 25g
-    # 缩小 btrfs 分区后 dd 到 10g 的机器上
-    # 备份分区表的位置是 25g
-    # 需要修复到 10g 的位置上
-    # 否则 partprobe parted 都无法正常工作
-
-    # 仅这种情况才用 sgdisk 修复
-    if [ "$partition_table_format" = gpt ] &&
-        [ "$orig_nbd_virtual_size" -gt "$(get_disk_size /dev/$xda)" ]; then
-        fix_gpt_backup_partition_table_by_sgdisk
-    fi
     update_part
-}
-
-fix_gpt_backup_partition_table_by_sgdisk() {
-    # 当备份分区表超出实际硬盘容量时，只能用 sgdisk 修复分区表
-    # 应用场景：镜像大小超出硬盘实际硬盘，但缩小分区后不超出实际硬盘容量，可以顺利 DD
-    # 例子 openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2
-
-    # parted 无法修复
-    # parted /dev/$xda -f -s print
-
-    # fdisk/sfdisk 显示主分区表损坏
-    # echo write | sfdisk /dev/$xda
-    # GPT PMBR size mismatch (50331647 != 20971519) will be corrected by write.
-    # The primary GPT table is corrupt, but the backup appears OK, so that will be used.
-
-    # 除此之外的场景应该用 parted 来修复
-
-    apk add sgdisk
-
-    # 两种方法都可以，但都不会修复备份分区表的 GUID
-    # 此时 sgdisk -v /dev/vda 会提示主副分区表 guid 不相同
-    # localhost:~# sgdisk -v /dev/$xda
-    # Problem: main header's disk GUID (A24485F3-2C02-43BD-BF4E-F52E42B00DEA) doesn't
-    # match the backup GPT header's disk GUID (ADAF57BC-B4F5-4E04-BCBA-BDDCD796C388)
-    # You should use the 'b' or 'd' option on the recovery & transformation menu to
-    # select one or the other header.
-    if false; then
-        sgdisk --backup /gpt-partition-table /dev/$xda
-        sgdisk --load-backup /gpt-partition-table /dev/$xda
-    else
-        sgdisk --move-second-header /dev/$xda
-    fi
-
-    # 因此需要运行一次设置 guid
-    if new_guid=$(sgdisk -v /dev/$xda | grep GUID | head -1 | grep -Eo '[0-9A-F-]{36}'); then
-        sgdisk --disk-guid $new_guid /dev/$xda
-    fi
-
-    update_part
-
-    apk del sgdisk
 }
 
 # 适用于 DD 后修复 gpt 备份分区表
@@ -2969,8 +2636,7 @@ fix_gpt_backup_partition_table_by_parted() {
 
 resize_after_install_cloud_image() {
     # 提前扩容
-    # 1 修复 vultr 512m debian 11 generic/genericcloud 首次启动 kernel panic
-    # 2 防止 gentoo 云镜像 websync 时空间不足
+    # 修复 vultr 512m debian 11 generic/genericcloud 首次启动 kernel panic
     info "Resize after dd"
     lsblk -f /dev/$xda
 
@@ -2991,38 +2657,12 @@ resize_after_install_cloud_image() {
 
         mkdir -p /os
 
-        # lvm ?
-        # 用 cloud-utils-growpart？
         case "$last_part_fs" in
         ext4)
-            # debian ci
             apk add e2fsprogs-extra
             e2fsck -p -f /dev/$xda*$last_part_num
             resize2fs /dev/$xda*$last_part_num
             apk del e2fsprogs-extra
-            ;;
-        xfs)
-            # opensuse ci
-            apk add xfsprogs-extra
-            mount /dev/$xda*$last_part_num /os
-            xfs_growfs /dev/$xda*$last_part_num
-            umount /os
-            apk del xfsprogs-extra
-            ;;
-        btrfs)
-            # fedora ci
-            apk add btrfs-progs
-            mount /dev/$xda*$last_part_num /os
-            btrfs filesystem resize max /os
-            umount /os
-            apk del btrfs-progs
-            ;;
-        ntfs)
-            # windows dd
-            apk add ntfs-3g-progs
-            echo y | ntfsresize /dev/$xda*$last_part_num
-            ntfsfix -d /dev/$xda*$last_part_num
-            apk del ntfs-3g-progs
             ;;
         esac
         update_part

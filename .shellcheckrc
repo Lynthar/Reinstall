@@ -1,0 +1,3 @@
+# tests/check_*.sh source tests/lib.sh: let shellcheck follow it without -x
+external-sources=true
+source-path=SCRIPTDIR

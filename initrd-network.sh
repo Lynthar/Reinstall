@@ -1,6 +1,6 @@
 #!/bin/ash
 # shellcheck shell=dash
-# alpine/debian initrd 共用此脚本
+# 只在临时 Alpine 的 initramfs 里跑（reinstall.sh 把它塞进 init 的 configure_ip）
 
 # accept_ra 接收 RA + 自动配置网关
 # autoconf  自动配置地址，依赖 accept_ra
@@ -11,7 +11,6 @@ ipv4_gateway=$3
 ipv6_addr=$4
 ipv6_gateway=$5
 
-DHCP_TIMEOUT=15
 DNS_FILE_TIMEOUT=5
 TEST_TIMEOUT=10
 
@@ -175,38 +174,7 @@ is_need_test_ipv6() {
     is_have_ipv6 && ! $ipv6_has_internet
 }
 
-# 测试方法：
-# ping   有的机器禁止
-# nc     测试 dot doh 端口是否开启
-# wget   测试下载
-
-# initrd 里面的软件版本，是否支持指定源IP/网卡
-# 软件     nc  wget  nslookup
-# debian9  ×    √   没有此软件
-# alpine   √    ×      ×
-
-test_by_wget() {
-    src=$1
-    dst=$2
-
-    # ipv6 需要添加 []
-    if echo "$dst" | grep -q ':'; then
-        url="https://[$dst]"
-    else
-        url="https://$dst"
-    fi
-
-    # tcp 443 通了就算成功，不管 http 是不是 404
-    # grep -m1 快速返回
-    wget -T "$TEST_TIMEOUT" \
-        --bind-address="$src" \
-        --no-check-certificate \
-        --max-redirect 0 \
-        --tries 1 \
-        -O /dev/null \
-        "$url" 2>&1 | grep -iq -m1 connected
-}
-
+# 测试方法：ping 有的机器禁止，所以用 nc 测 443 端口通不通（initramfs 的 nc 能指定源地址）
 test_by_nc() {
     src=$1
     dst=$2
@@ -218,32 +186,20 @@ test_by_nc() {
         "$dst" 443
 }
 
-is_debian_kali() {
-    [ -f /etc/lsb-release ] && grep -Eiq 'Debian|Kali' /etc/lsb-release
-}
-
-test_connect() {
-    if is_debian_kali; then
-        test_by_wget "$1" "$2"
-    else
-        test_by_nc "$1" "$2"
-    fi
-}
-
 test_internet() {
     for i in $(seq 5); do
         echo "Testing Internet Connection. Test $i... "
         if is_need_test_ipv4 &&
             current_ipv4_addr="$(get_first_ipv4_addr | remove_netmask)" &&
-            { test_connect "$current_ipv4_addr" "$ipv4_dns1" ||
-                test_connect "$current_ipv4_addr" "$ipv4_dns2"; } >/dev/null 2>&1; then
+            { test_by_nc "$current_ipv4_addr" "$ipv4_dns1" ||
+                test_by_nc "$current_ipv4_addr" "$ipv4_dns2"; } >/dev/null 2>&1; then
             echo "IPv4 has internet."
             ipv4_has_internet=true
         fi
         if is_need_test_ipv6 &&
             current_ipv6_addr="$(get_first_ipv6_addr | remove_netmask)" &&
-            { test_connect "$current_ipv6_addr" "$ipv6_dns1" ||
-                test_connect "$current_ipv6_addr" "$ipv6_dns2"; } >/dev/null 2>&1; then
+            { test_by_nc "$current_ipv6_addr" "$ipv6_dns1" ||
+                test_by_nc "$current_ipv6_addr" "$ipv6_dns2"; } >/dev/null 2>&1; then
             echo "IPv6 has internet."
             ipv6_has_internet=true
         fi
@@ -299,82 +255,11 @@ ip link set dev "$ethx" up
 sleep 1
 
 # 开启 dhcpv4/v6
-# debian / kali
-if [ -f /usr/share/debconf/confmodule ]; then
-    # shellcheck source=/dev/null
-    . /usr/share/debconf/confmodule
-
-    db_progress STEP 1
-
-    # dhcpv4
-    # 无需等待写入 dns，在 dhcpv6 等待
-    db_progress INFO netcfg/dhcp_progress
-    udhcpc -i "$ethx" -f -q -n || true
-    db_progress STEP 1
-
-    # slaac + dhcpv6
-    db_progress INFO netcfg/slaac_wait_title
-    # https://salsa.debian.org/installer-team/netcfg/-/blob/master/autoconfig.c#L148
-    cat <<EOF >/var/lib/netcfg/dhcp6c.conf
-interface $ethx {
-    send ia-na 0;
-    request domain-name-servers;
-    request domain-name;
-    script "/lib/netcfg/print-dhcp6c-info";
-};
-
-id-assoc na 0 {
-};
-EOF
-    dhcp6c -c /var/lib/netcfg/dhcp6c.conf "$ethx" || true
-    sleep $DHCP_TIMEOUT # 等待获取 ip 和写入 dns
-    # kill-all-dhcp
-    kill -9 "$(cat /var/run/dhcp6c.pid)" || true
-    db_progress STEP 1
-
-    # 静态 + 检测网络提示
-    db_subst netcfg/link_detect_progress interface "$ethx"
-    db_progress INFO netcfg/link_detect_progress
-else
-    # alpine
-    # h3c 移动云电脑使用 udhcpc 会重复提示 sending select，无法获得 ipv6
-    # dhcpcd 会配置租约时间，过期会移除 IP，但我们的没有在后台运行 dhcpcd ，因此用 udhcpc
-    method=udhcpc
-
-    case "$method" in
-    udhcpc)
-        udhcpc -i "$ethx" -f -q -n || true
-        udhcpc6 -i "$ethx" -f -q -n || true
-        sleep $DNS_FILE_TIMEOUT # 好像不用等待写入 dns，但是以防万一
-        ;;
-    dhcpcd)
-        # https://gitlab.alpinelinux.org/alpine/aports/-/blob/master/main/dhcpcd/dhcpcd.pre-install
-        grep -q dhcpcd /etc/group || addgroup -S dhcpcd
-        grep -q dhcpcd /etc/passwd || adduser -S -D -H \
-            -h /var/lib/dhcpcd \
-            -s /sbin/nologin \
-            -G dhcpcd \
-            -g dhcpcd \
-            dhcpcd
-
-        # --noipv4ll 禁止生成 169.254.x.x
-        if false; then
-            # 等待 DHCP 全过程
-            timeout $DHCP_TIMEOUT \
-                dhcpcd --persistent --noipv4ll --nobackground "$ethx"
-        else
-            # 等待 DNS
-            dhcpcd --persistent --noipv4ll "$ethx" # 获取到 IP 后立即切换到后台
-            sleep $DNS_FILE_TIMEOUT                # 需要等待写入 dns
-            dhcpcd -x "$ethx"                      # 终止
-        fi
-        # autoconf 和 accept_ra 会被 dhcpcd 自动关闭，因此需要重新打开
-        # 如果没重新打开，重新运行 dhcpcd 命令依然可以正常生成 slaac 地址和路由
-        sysctl -w "net.ipv6.conf.$ethx.autoconf=1"
-        sysctl -w "net.ipv6.conf.$ethx.accept_ra=1"
-        ;;
-    esac
-fi
+# 用 udhcpc 不用 dhcpcd：dhcpcd 会按租约过期移除 IP，而这里不让 dhcp 客户端常驻后台
+# 已知 h3c 移动云电脑上 udhcpc 会反复提示 sending select，拿不到 ipv6
+udhcpc -i "$ethx" -f -q -n || true
+udhcpc6 -i "$ethx" -f -q -n || true
+sleep $DNS_FILE_TIMEOUT # 好像不用等待写入 dns，但是以防万一
 
 # 等待slaac
 # 有ipv6地址就跳过，不管是slaac或者dhcpv6

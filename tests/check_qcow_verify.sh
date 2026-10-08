@@ -6,26 +6,12 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 trans=$repo/trans.sh
+# shellcheck source=lib.sh
+. "$repo/tests/lib.sh"
 
-skip() {
-    echo "SKIP check_qcow_verify: $1"
-    exit 0
-}
 for cmd in gpg awk sha256sum sha512sum; do
     command -v "$cmd" >/dev/null || skip "missing $cmd"
 done
-
-# Pulls one top-level function out of trans.sh, closing brace included.
-extract_fn() {
-    awk -v name="$1" '
-        index($0, name "() {") == 1 { found = 1 }
-        found { print }
-        found && $0 == "}" { exit }
-    ' "$trans" | grep . || {
-        echo "cannot extract $1() from trans.sh" >&2
-        exit 1
-    }
-}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -69,8 +55,8 @@ download() {
     esac
 }
 STUBS
-extract_fn fetch_qcow_hash >"$work/fns.sh"
-extract_fn verify_qcow >>"$work/fns.sh"
+extract_fn "$trans" fetch_qcow_hash >"$work/fns.sh"
+extract_fn "$trans" verify_qcow >>"$work/fns.sh"
 
 failures=0
 fail() {
@@ -135,7 +121,7 @@ run_case "debian image not listed" debian real.asc - - other.qcow2 ubuntu.img "o
 
 echo "== checksums are verified before the disk is touched =="
 for arm in debian ubuntu; do
-    if extract_fn trans | awk -v arm="$arm)" '
+    if extract_fn "$trans" trans | awk -v arm="$arm)" '
         $1 == arm { in_arm = 1; next }
         in_arm && $1 == "fetch_qcow_hash" { fetch = NR }
         in_arm && $1 == "create_part" { part = NR }
@@ -148,9 +134,4 @@ for arm in debian ubuntu; do
     fi
 done
 
-if [ "$failures" != 0 ]; then
-    echo "check_qcow_verify: $failures assertion(s) failed" >&2
-    exit 1
-fi
-echo "check_qcow_verify: ok"
-exit 0
+finish

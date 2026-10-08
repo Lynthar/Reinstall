@@ -6,18 +6,8 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 trans=$repo/trans.sh
-
-# Pulls one top-level function out of trans.sh, closing brace included.
-extract_fn() {
-    awk -v name="$1" '
-        index($0, name "() {") == 1 { found = 1 }
-        found { print }
-        found && $0 == "}" { exit }
-    ' "$trans" | grep . || {
-        echo "cannot extract $1() from trans.sh" >&2
-        exit 1
-    }
-}
+# shellcheck source=lib.sh
+. "$repo/tests/lib.sh"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -43,8 +33,8 @@ wget() {
     esac
 }
 STUBS
-extract_fn pipe_extract >"$work/fns.sh"
-extract_fn dd_raw_with_extract >>"$work/fns.sh"
+extract_fn "$trans" pipe_extract >"$work/fns.sh"
+extract_fn "$trans" dd_raw_with_extract >>"$work/fns.sh"
 printf 'raw image bytes, all of them' >"$work/image"
 
 # The target disk is /dev/$xda; /dev/stdout lets the harness capture what was written.
@@ -60,16 +50,6 @@ wget_mode=\$1
 dd_raw_with_extract
 CASE
 
-failures=0
-check() {
-    if [ "$2" = "$3" ]; then
-        echo "    ok   $1 = $2"
-    else
-        echo "    FAIL $1: expected '$3', got '$2'" >&2
-        failures=$((failures + 1))
-    fi
-}
-
 # run_case <shell command> <wget mode> <expected pass|fail>
 run_case() {
     local shell=$1 mode=$2 want=$3 got
@@ -82,11 +62,6 @@ run_case() {
     check "$shell / wget $mode" "$got" "$want"
 }
 
-shells=(bash)
-if busybox ash -c : 2>/dev/null; then
-    shells+=("busybox ash")
-fi
-
 for shell in "${shells[@]}"; do
     run_case "$shell" ok pass
     check "$shell / image written whole" "$(cmp -s "$work/disk" "$work/image" && echo yes || echo no)" yes
@@ -94,9 +69,4 @@ for shell in "${shells[@]}"; do
     run_case "$shell" missing fail
 done
 
-if [ "$failures" != 0 ]; then
-    echo "check_dd_pipeline: $failures assertion(s) failed" >&2
-    exit 1
-fi
-echo "check_dd_pipeline: ok"
-exit 0
+finish

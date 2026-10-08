@@ -6,18 +6,8 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 trans=$repo/trans.sh
-
-# Pulls one top-level function out of trans.sh, closing brace included.
-extract_fn() {
-    awk -v name="$1" '
-        index($0, name "() {") == 1 { found = 1 }
-        found { print }
-        found && $0 == "}" { exit }
-    ' "$trans" | grep . || {
-        echo "cannot extract $1() from trans.sh" >&2
-        exit 1
-    }
-}
+# shellcheck source=lib.sh
+. "$repo/tests/lib.sh"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -32,7 +22,7 @@ apk() { :; }
 get_all_disks() { awk '{print \$1}' "$work/disks"; }
 sfdisk() { awk -v d="\${2#/dev/}" '\$1 == d {print \$2}' "$work/disks"; }
 STUBS
-extract_fn find_xda >"$work/fns.sh"
+extract_fn "$trans" find_xda >"$work/fns.sh"
 
 cat >"$work/case.sh" <<CASE
 set -eE
@@ -42,16 +32,6 @@ main_disk=\$1
 find_xda >/dev/null
 echo "xda=\$xda"
 CASE
-
-failures=0
-check() {
-    if [ "$2" = "$3" ]; then
-        echo "    ok   $1 = $2"
-    else
-        echo "    FAIL $1: expected '$3', got '$2'" >&2
-        failures=$((failures + 1))
-    fi
-}
 
 # run_case <shell command> <main_disk> <disk lines...>; prints the picked disk or "aborted".
 run_case() {
@@ -64,11 +44,6 @@ run_case() {
 
 guid_a=d6b17c1a-fa1e-40a1-bdcb-0278a3ed9cfc
 guid_b=0f2c5e1d-3b6a-4c1e-9f7d-1a2b3c4d5e6f
-
-shells=(bash)
-if busybox ash -c : 2>/dev/null; then
-    shells+=("busybox ash")
-fi
 
 for shell in "${shells[@]}"; do
     check "$shell / one match among two disks" \
@@ -83,9 +58,4 @@ for shell in "${shells[@]}"; do
         "$(grep -c 'on both vda and vdb' "$work/log")" 1
 done
 
-if [ "$failures" != 0 ]; then
-    echo "check_find_xda: $failures assertion(s) failed" >&2
-    exit 1
-fi
-echo "check_find_xda: ok"
-exit 0
+finish

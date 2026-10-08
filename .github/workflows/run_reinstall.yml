@@ -11,6 +11,8 @@ on:
       - "tests/check_dd_pipeline.sh"
       - "tests/check_sync_time.sh"
       - "tests/check_find_xda.sh"
+      - "tests/check_ifupdown_config.sh"
+      - "tests/lib.sh"
   pull_request:
     paths:
       - "reinstall.sh"
@@ -21,11 +23,13 @@ on:
       - "tests/check_dd_pipeline.sh"
       - "tests/check_sync_time.sh"
       - "tests/check_find_xda.sh"
+      - "tests/check_ifupdown_config.sh"
+      - "tests/lib.sh"
 permissions:
   contents: read
 jobs:
   tests:
-    name: 分区角色、镜像验签、DD 管道、时间同步与选盘
+    name: 分区角色、镜像验签、DD 管道、时间同步、选盘与网络配置
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,6 +39,7 @@ jobs:
       - run: bash tests/check_dd_pipeline.sh
       - run: bash tests/check_sync_time.sh
       - run: bash tests/check_find_xda.sh
+      - run: bash tests/check_ifupdown_config.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest

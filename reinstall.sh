@@ -647,7 +647,6 @@ setos() {
         # 因此使用 nocloud
         ci_type=nocloud
         eval ${step}_img=$cdimage_mirror/cloud/$codename/latest/debian-$releasever-$ci_type-$basearch_alt.qcow2
-        eval ${step}_deb_mirror=deb.debian.org/debian
         eval ${step}_kernel=linux-image$flavour-$basearch_alt
     }
 
@@ -718,7 +717,6 @@ Continue with DD?
             fi
         fi
         eval "${step}_img='$img'"
-        eval "${step}_img_type='$img_type'"
         eval "${step}_img_type_warp='$img_type_warp'"
     }
 
@@ -1051,14 +1049,6 @@ is_efi() {
     else
         [ -d /sys/firmware/efi ]
     fi
-}
-
-is_grub_dir_linked() {
-    # cloudcone 重装前/重装后(方法1)
-    [ "$(readlink -f /boot/grub/grub.cfg)" = /boot/grub2/grub.cfg ] ||
-        [ "$(readlink -f /boot/grub2/grub.cfg)" = /boot/grub/grub.cfg ] ||
-        # cloudcone 重装后(方法2)
-        { [ -f /boot/grub2/grub.cfg ] && [ "$(cat /boot/grub2/grub.cfg)" = 'chainloader (hd0)+1' ]; }
 }
 
 is_secure_boot_enabled() {
@@ -1735,19 +1725,18 @@ is_need_quote() {
     [[ "$1" = *' '* ]] || [[ "$1" = *'&'* ]] || [[ "$1" = http* ]]
 }
 
-# 转换 finalos_a=1 为 finalos.a=1 ，排除 finalos_mirrorlist
+# finalos 与 extra 两张键表就是两段之间的全部字段：stage 2 去掉前缀、按同名变量读，
+# 不在表里的值上不了内核命令行。加键要两边一起改，tests/check_cmdline_contract.sh 会比对
 build_finalos_cmdline() {
-    if vars=$(compgen -v finalos_); then
-        for key in $vars; do
-            value=${!key}
-            key=${key#finalos_}
-            if [ -n "$value" ] && [ $key != "mirrorlist" ]; then
-                is_need_quote "$value" &&
-                    finalos_cmdline+=" finalos_$key='$value'" ||
-                    finalos_cmdline+=" finalos_$key=$value"
-            fi
-        done
-    fi
+    for key in distro releasever img img_type_warp kernel confirmed_no_efi; do
+        var=finalos_$key
+        value=${!var}
+        if [ -n "$value" ]; then
+            is_need_quote "$value" &&
+                finalos_cmdline+=" finalos_$key='$value'" ||
+                finalos_cmdline+=" finalos_$key=$value"
+        fi
+    done
 }
 
 build_extra_cmdline() {
@@ -1765,18 +1754,6 @@ build_extra_cmdline() {
                 extra_cmdline+=" extra_$key=$value"
         fi
     done
-
-    # 指定最终安装系统的 mirrorlist，链接有&，在grub中是特殊字符，所以要加引号
-    if [ -n "$finalos_mirrorlist" ]; then
-        extra_cmdline+=" extra_mirrorlist='$finalos_mirrorlist'"
-    elif [ -n "$nextos_mirrorlist" ]; then
-        extra_cmdline+=" extra_mirrorlist='$nextos_mirrorlist'"
-    fi
-
-    # cloudcone 特殊处理
-    if is_grub_dir_linked; then
-        finalos_cmdline+=" extra_link_grub_dir=1"
-    fi
 }
 
 echo_tmp_ttys() {
@@ -1876,11 +1853,6 @@ mod_initrd_alpine() {
         fi
     fi
     rm -f $modloop_file
-
-    # hack 下载 dhcpcd
-    # shellcheck disable=SC2154
-    download_and_extract_apk "$nextos_releasever" dhcpcd "$initrd_dir"
-    sed -i -e '/^slaac private/s/^/#/' -e '/^#slaac hwaddr/s/^#//' $initrd_dir/etc/dhcpcd.conf
 
     # hack 2 /usr/share/udhcpc/default.script
     # 脚本被调用的顺序

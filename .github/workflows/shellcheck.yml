@@ -4,11 +4,13 @@ on:
     paths:
       - "**.sh"
       - "fix-eth-name.initd"
+      - ".shellcheckrc"
       - ".github/workflows/shellcheck.yml"
   pull_request:
     paths:
       - "**.sh"
       - "fix-eth-name.initd"
+      - ".shellcheckrc"
       - ".github/workflows/shellcheck.yml"
 permissions:
   contents: read
@@ -27,7 +29,10 @@ jobs:
           shellcheck fix-eth-name.sh
           shellcheck ttys.sh
           shellcheck fix-eth-name.initd
+          shellcheck tests/lib.sh
           shellcheck tests/check_undefined_calls.sh
+          shellcheck tests/check_cmdline_contract.sh
+          shellcheck tests/check_ifupdown_config.sh
           shellcheck tests/check_part_layout.sh
           shellcheck tests/check_qcow_verify.sh
           shellcheck tests/check_dd_pipeline.sh
@@ -39,3 +44,5 @@ jobs:
           bash tests/check_undefined_calls.sh \
             reinstall.sh trans.sh initrd-network.sh fix-eth-name.sh \
             ttys.sh fix-eth-name.initd
+      - name: Check the stage 1 / stage 2 command-line contract
+        run: bash tests/check_cmdline_contract.sh
