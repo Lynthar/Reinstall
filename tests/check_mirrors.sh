@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # 探测 reinstall.sh 支持的每个 distro / version 组合的下载链接是否可达，由 check-mirrors.yml 每周跑。
-# 版本与代号从 reinstall.sh 原文抽取（verify_os_name 的版本清单、setos_<distro> 的 codename case）；
-# 抽不到或对不上就停下，不带着旧表去探。
+# 版本与代号从 reinstall.sh 原文抽取（verify_os_name 的版本清单、setos_<distro> 的 codename case），
+# Debian 安装期间的源与 Freexian 的 key 从 trans.sh 抽；抽不到或对不上就停下，不带着旧表去探。
 
 set -u
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 reinstall=$repo/reinstall.sh
+trans=$repo/trans.sh
 # shellcheck source=lib.sh
 . "$repo/tests/lib.sh"
 
@@ -26,6 +27,19 @@ codename_of() {
         exit 2
     }
 }
+
+# A constant trans.sh sets at top level.
+trans_value() {
+    sed -n -E "s/^$1=([^ ]+)$/\\1/p" "$trans" | grep . || {
+        echo "no $1= in trans.sh" >&2
+        exit 2
+    }
+}
+
+suites_fn=$(extract_fn "$trans" get_debian_suites) || exit
+eval "$suites_fn"
+freexian_key_url=$(trans_value freexian_key_url) || exit
+freexian_key_fpr=$(trans_value freexian_key_fpr) || exit
 
 alpine_versions=$(versions_of alpine) || exit
 debian_versions=$(versions_of debian) || exit
@@ -53,6 +67,24 @@ probe() {
 $url"
 }
 
+# An InRelease must be signed by the key trans.sh pins: a rotated key would stop every
+# Debian ≤11 install before it touches the disk.
+gnupg=$(mktemp -d)
+trap 'rm -rf "$gnupg"' EXIT
+probe_signed() {
+    local url=$1
+    if curl -fsSL --max-time 30 -o "$gnupg/InRelease" "$url" &&
+        gpg --homedir "$gnupg" --batch --status-fd 1 --verify "$gnupg/InRelease" 2>/dev/null |
+        awk -v fpr="$freexian_key_fpr" '$2 == "VALIDSIG" && ($3 == fpr || $NF == fpr) { ok = 1 } END { exit !ok }'; then
+        printf 'OK    %s (signed by %s)\n' "$url" "$freexian_key_fpr"
+    else
+        printf 'FAIL  %s (not signed by %s)\n' "$url" "$freexian_key_fpr"
+        failed=$((failed + 1))
+        failed_urls="$failed_urls
+$url"
+    fi
+}
+
 echo '=== Alpine (virt kernel; reinstall only runs in VMs) ==='
 for v in $alpine_versions; do
     for arch in x86_64 aarch64; do
@@ -69,6 +101,21 @@ for v in $debian_versions; do
         probe "https://cdimage.debian.org/images/cloud/$codename/latest/debian-$v-nocloud-$arch.qcow2"
     done
     probe "https://cdimage.debian.org/images/cloud/$codename/latest/SHA512SUMS"
+done
+
+echo
+echo '=== Debian apt suites used during the install ==='
+# A key that cannot be fetched fails every probe_signed below.
+curl -fsSL --max-time 30 -o "$gnupg/key.gpg" "$freexian_key_url" &&
+    gpg --homedir "$gnupg" --batch --import "$gnupg/key.gpg" 2>/dev/null
+for v in $debian_versions; do
+    codename=$(codename_of debian "$v") || exit
+    while read -r uri suite _; do
+        case "$uri" in
+        *freexian*) probe_signed "$uri/dists/$suite/InRelease" ;;
+        *) probe "$uri/dists/$suite/InRelease" ;;
+        esac
+    done < <(releasever=$v get_debian_suites)
 done
 
 echo

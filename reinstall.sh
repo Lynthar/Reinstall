@@ -11,7 +11,7 @@ confhome=https://raw.githubusercontent.com/Lynthar/Reinstall/main
 insecure_opt=
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0005
+SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0006
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -56,9 +56,9 @@ trap_err() {
 
 usage_and_exit() {
     cat <<EOF
-Usage: ./reinstall.sh debian   11|12|13
-                      ubuntu   20.04|22.04|24.04|25.10 [--minimal]
-                      alpine   3.20|3.21|3.22|3.23
+Usage: ./reinstall.sh debian   10|11|12|13
+                      ubuntu   18.04|20.04|22.04|24.04|26.04 [--minimal]
+                      alpine   3.21|3.22|3.23
                       dd       --img="https://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
 
        Options:       [--password PASSWORD | --password-stdin]
@@ -630,6 +630,7 @@ setos() {
 
     setos_debian() {
         case "$releasever" in
+        10) codename=buster ;;
         11) codename=bullseye ;;
         12) codename=bookworm ;;
         13) codename=trixie ;;
@@ -637,25 +638,22 @@ setos() {
 
         cdimage_mirror=https://cdimage.debian.org/images # 在瑞典，不是 cdn
 
-        is_virt && flavour=-cloud || flavour=
-        # 甲骨文 arm64 cloud 内核 vnc 没有显示
-        [ "$basearch_alt" = arm64 ] && flavour=
-
         # cloud image
         # https://salsa.debian.org/cloud-team/debian-cloud-images/-/tree/master/config_space/bookworm/files/etc/default/grub.d
         # cloud 包括各种奇怪的优化，例如不显示 grub 菜单
         # 因此使用 nocloud
         ci_type=nocloud
         eval ${step}_img=$cdimage_mirror/cloud/$codename/latest/debian-$releasever-$ci_type-$basearch_alt.qcow2
-        eval ${step}_kernel=linux-image$flavour-$basearch_alt
+        eval ${step}_codename=$codename
     }
 
     setos_ubuntu() {
         case "$releasever" in
+        18.04) codename=bionic ;;
         20.04) codename=focal ;;
         22.04) codename=jammy ;;
         24.04) codename=noble ;;
-        25.10) codename=questing ;; # non-lts
+        26.04) codename=resolute ;;
         esac
 
         # cloud image
@@ -745,9 +743,9 @@ verify_os_name() {
     fi
 
     for os in \
-        'debian   11|12|13' \
-        'ubuntu   20.04|22.04|24.04|25.10' \
-        'alpine   3.20|3.21|3.22|3.23' \
+        'debian   10|11|12|13' \
+        'ubuntu   18.04|20.04|22.04|24.04|26.04' \
+        'alpine   3.21|3.22|3.23' \
         'dd'; do
         read -r ds vers <<<"$os"
         vers_=${vers//\./\\\.}
@@ -1045,7 +1043,7 @@ check_ram() {
 is_efi() {
     if is_in_windows; then
         # bcdedit | grep -qi '^path.*\.efi'
-        mountvol | grep -q --text 'EFI'
+        mountvol | grep -q -a 'EFI'
     else
         [ -d /sys/firmware/efi ]
     fi
@@ -1087,7 +1085,7 @@ is_use_local_extlinux() {
 is_mbr_using_grub() {
     find_main_disk
     # 各发行版不一定自带 strings hexdump xxd od 命令
-    head -c 440 /dev/$xda | grep --text -iq 'GRUB'
+    head -c 440 /dev/$xda | grep -a -iq 'GRUB'
 }
 
 to_upper() {
@@ -1406,7 +1404,15 @@ collect_netconf() {
                 eval ipv${v}_ethx="$ethx" # can_use_cloud_kernel 要用
                 eval ipv${v}_mac="$(ip link show dev $ethx | grep link/ether | head -1 | awk '{print $2}')"
                 eval ipv${v}_gateway="$gateway"
-                eval ipv${v}_addr="$(ip -$v -o addr show scope global dev $ethx | grep -v temporary | head -1 | awk '{print $4}')"
+                addrs=$(ip -$v -o addr show scope global dev $ethx | grep -v temporary | awk '{print $4}')
+                addr=$(head -1 <<<"$addrs")
+                # 有多个 IPv6 前缀时第一个不一定到得了网关：改取内核出网实际用的源地址（route get 不发包）
+                if [ "$v" = 6 ] &&
+                    src=$(ip -6 route get 2606:4700:4700::1111 dev "$ethx" 2>/dev/null | grep -Eo 'src [^ ]+') &&
+                    match=$(awk -F/ -v src="${src#src }" '$1 == src { print; exit }' <<<"$addrs" | grep .); then
+                    addr=$match
+                fi
+                eval ipv${v}_addr="$addr"
             fi
         done
     fi
@@ -1529,12 +1535,18 @@ add_efi_entry_in_linux() {
                 dev_part=$(findmnt -T "$dist_dir" -no SOURCE | grep '^/dev/')
             fi
 
-            id=$(efibootmgr --create-only \
+            # 失败时把命令和输出都打出来：这一步的错误只有 efibootmgr 自己说得清
+            set -- efibootmgr --create-only \
                 --disk "/dev/$(get_disk_by_part $dev_part)" \
                 --part "$(get_part_num_by_part $dev_part)" \
                 --label "$(get_entry_name)" \
-                --loader "\\EFI\\reinstall\\$basename" |
-                grep_efi_entry | tail -1 | grep_efi_index)
+                --loader "\\EFI\\reinstall\\$basename"
+            if ! res=$("$@"); then
+                echo "Command: $*"
+                echo "$res"
+                error_and_exit "Could not add efi entry."
+            fi
+            id=$(echo "$res" | grep_efi_entry | tail -1 | grep_efi_index)
             efibootmgr --bootnext $id
             return
         fi
@@ -1688,7 +1700,7 @@ install_grub_win() {
         # 添加引导
         # 脚本可能不是首次运行，所以先删除原来的
         id='{1c41f649-1637-52f1-aea8-f96bfebeecc8}'
-        bcdedit /enum all | grep --text $id && bcdedit /delete $id
+        bcdedit /enum all | grep -a $id && bcdedit /delete $id
         bcdedit /create $id /d "$(get_entry_name)" /application bootsector
         bcdedit /set $id device partition=$c:
         bcdedit /set $id path \\g2ldr
@@ -1728,7 +1740,7 @@ is_need_quote() {
 # finalos 与 extra 两张键表就是两段之间的全部字段：stage 2 去掉前缀、按同名变量读，
 # 不在表里的值上不了内核命令行。加键要两边一起改，tests/check_cmdline_contract.sh 会比对
 build_finalos_cmdline() {
-    for key in distro releasever img img_type_warp kernel confirmed_no_efi; do
+    for key in distro releasever img img_type_warp codename confirmed_no_efi; do
         var=finalos_$key
         value=${!var}
         if [ -n "$value" ]; then
@@ -1908,8 +1920,8 @@ EOF
         chmod a+x \$sysroot/etc/local.d/trans.start
         ln -s /etc/init.d/local \$sysroot/etc/runlevels/default/
 
-        # 配置 + 自定义驱动
-        for dir in /configs /custom_drivers; do
+        # 配置、仓库文件 + 自定义驱动
+        for dir in /configs /repo /custom_drivers; do
             if [ -d \$dir ]; then
                 cp -r \$dir \$sysroot/
                 rm -rf \$dir
@@ -1969,6 +1981,11 @@ This script is outdated, please download reinstall.sh again.
     curl -Lo $initrd_dir/initrd-network.sh $confhome/initrd-network.sh
     chmod a+x $initrd_dir/trans.sh $initrd_dir/initrd-network.sh
 
+    # trans.sh 要用的其余仓库文件按原路径放进 /repo：装机期间不再回仓库取，断网或仓库变了都不影响
+    for file in logviewer.html fix-eth-name.sh fix-eth-name.initd fix-eth-name.service keys/ubuntu-cloud.asc; do
+        curl --create-dirs -Lo $initrd_dir/repo/$file $confhome/$file
+    done
+
     # 保存配置
     mkdir -p $initrd_dir/configs
     if [ -n "$ssh_keys" ]; then
@@ -1997,7 +2014,7 @@ This script is outdated, please download reinstall.sh again.
     # -c    Identical to "-H newc", use the new (SVR4)
     #       portable format.If you wish the old portable
     #       (ASCII) archive format, use "-H odc" instead.
-    find . | cpio --quiet -o -H newc | gzip -1 >/reinstall-initrd
+    find . | cpio --quiet -o -H newc -R 0:0 | gzip -1 >/reinstall-initrd
     cd - >/dev/null
 }
 
@@ -2037,15 +2054,14 @@ remove_useless_initrd_files() {
         done
     )
     (
+        # hid、usb、input/keyboard 不删：甲骨文 arm64 的控制台是 USB 键盘，删了就没法在控制台救援
         cd lib/modules/*/kernel
         for item in \
             net/mac80211 \
             net/wireless \
             net/bluetooth \
-            drivers/hid \
             drivers/mmc \
             drivers/mtd \
-            drivers/usb \
             drivers/ssb \
             drivers/mfd \
             drivers/bcma \
@@ -2057,7 +2073,6 @@ remove_useless_initrd_files() {
             drivers/net/bonding \
             drivers/net/wireless \
             drivers/input/rmi4 \
-            drivers/input/keyboard \
             drivers/input/touchscreen \
             drivers/bus/mhi \
             drivers/char/pcmcia \
@@ -2392,7 +2407,8 @@ if [[ "$confhome" =~ ^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+$ ]];
             grep '"sha"' | grep -Eo '[0-9a-f]{40}' | head -1)
         # 退回可变分支等于没有钉版，而制造这次失败正是中间人最省力的一步
         [ -n "$commit" ] ||
-            error_and_exit "Could not resolve $branch to a commit SHA. Retry, or pass --commit SHA."
+            error_and_exit "Could not resolve $branch to a commit SHA. Retry, or pass --commit SHA.
+api.github.com has no IPv6 address, so an IPv6-only host has to pass --commit SHA."
     fi
 
     confhome="https://raw.githubusercontent.com/$repo/$commit"
@@ -2439,7 +2455,7 @@ if is_efi; then
         rm -f /cygdrive/$c/grub.cfg
 
         bcdedit /set '{fwbootmgr}' bootsequence '{bootmgr}'
-        bcdedit /enum bootmgr | grep --text -B3 'reinstall' | awk '{print $2}' | grep '{.*}' |
+        bcdedit /enum bootmgr | grep -a -B3 'reinstall' | awk '{print $2}' | grep '{.*}' |
             xargs -I {} cmd /c bcdedit /delete {}
     else
         # shellcheck disable=SC2046
@@ -2703,6 +2719,9 @@ if [ -n "$ssh_keys" ]; then
     echo "Public Key: $ssh_keys"
 else
     echo "Password: $password"
+fi
+if [ -n "$ssh_port" ]; then
+    echo "SSH Port: $ssh_port"
 fi
 
 if is_alpine_live; then

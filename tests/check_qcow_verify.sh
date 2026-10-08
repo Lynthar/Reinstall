@@ -16,14 +16,6 @@ done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# Prints the fingerprint of a fresh signing key kept in its own homedir.
-gen_key() {
-    mkdir -p "$1"
-    chmod 700 "$1"
-    gpg --homedir "$1" --batch --pinentry-mode loopback --passphrase '' \
-        --quick-gen-key "$2" ed25519 sign never >/dev/null 2>&1
-    gpg --homedir "$1" --batch --with-colons --fingerprint 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }'
-}
 real_fpr=$(gen_key "$work/real" "Pinned Signer <pinned@example.invalid>")
 gen_key "$work/evil" "Second Signer <second@example.invalid>" >/dev/null
 gpg --homedir "$work/real" --batch --armor --export 2>/dev/null >"$work/real.asc"
@@ -40,7 +32,8 @@ for signer in real evil; do
 done
 printf '%s  debian.qcow2\n' "$(sha512sum "$work/ubuntu.img" | awk '{print $1}')" >"$work/SHA512SUMS"
 
-# trans.sh's collaborators, replaced: the mirror is a directory, the key is a file.
+# trans.sh's collaborators, replaced: the mirror is a directory, and the key stage 1
+# packs into the initrd is the mirror's key.asc.
 cat >"$work/stubs.sh" <<'STUBS'
 info() { :; }
 apk() { :; }
@@ -48,15 +41,11 @@ error_and_exit() {
     echo "error_and_exit: $*" >&2
     exit 1
 }
-download() {
-    case "$1" in
-    */keys/ubuntu-cloud.asc) cp "$mirror/key.asc" "$2" ;;
-    *) cp "$mirror/$(basename "$1")" "$2" ;;
-    esac
-}
+download() { cp "$mirror/$(basename "$1")" "$2"; }
 STUBS
-extract_fn "$trans" fetch_qcow_hash >"$work/fns.sh"
-extract_fn "$trans" verify_qcow >>"$work/fns.sh"
+for fn in import_verify_key is_signed_by fetch_qcow_hash verify_qcow; do
+    extract_fn "$trans" "$fn"
+done | sed "s|/repo/keys/ubuntu-cloud.asc|$work/mirror/key.asc|g" >"$work/fns.sh"
 
 failures=0
 fail() {
@@ -84,7 +73,7 @@ run_case() {
         . "$work/stubs.sh"
         # shellcheck disable=SC1091
         . "$work/fns.sh"
-        export mirror distro confhome=https://confhome.invalid
+        export mirror distro
         export img="https://mirror.invalid/releases/$image"
         # shellcheck disable=SC2034
         ubuntu_image_key_fpr=$real_fpr

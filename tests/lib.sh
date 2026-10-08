@@ -46,6 +46,15 @@ finish() {
     exit 0
 }
 
+# gen_key <homedir> <uid>: prints the fingerprint of a fresh signing key kept in <homedir>.
+gen_key() {
+    mkdir -p "$1"
+    chmod 700 "$1"
+    gpg --homedir "$1" --batch --pinentry-mode loopback --passphrase '' \
+        --quick-gen-key "$2" ed25519 sign never >/dev/null 2>&1
+    gpg --homedir "$1" --batch --with-colons --fingerprint 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }'
+}
+
 # trans.sh runs under busybox ash, so a harness of its functions runs them under
 # that too when it is installed, after bash.
 shells=(bash)

@@ -10,7 +10,7 @@ set -eE
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0005
+SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0006
 
 TRUE=0
 FALSE=1
@@ -267,8 +267,7 @@ is_use_cloud_image() {
 
 setup_websocketd() {
     apk add websocketd
-    # shellcheck disable=SC2154
-    wget $confhome/logviewer.html -O /tmp/index.html
+    cp /repo/logviewer.html /tmp/index.html
     apk add coreutils
 
     if [ -z "$web_port" ]; then
@@ -312,10 +311,24 @@ setup_web_if_enough_ram() {
     fi
 }
 
+# get_ttys <前缀>：能写的串口与 tty0，最后一个是主控制台；有的机器有 ttyS0 却写不进
 get_ttys() {
     prefix=$1
-    # shellcheck disable=SC2154
-    wget $confhome/ttys.sh -O- | sh -s $prefix
+    if [ "$(uname -m)" = aarch64 ]; then
+        ttys="ttyS0 ttyAMA0 tty0"
+    else
+        ttys="ttyS0 tty0"
+    fi
+    sep=
+    for tty in $ttys; do
+        if stty -g -F "/dev/$tty" >/dev/null 2>&1; then
+            printf '%s%s%s' "$sep" "$prefix" "$tty"
+            if [ "$prefix" = console= ] && [ "$tty" != tty0 ]; then
+                printf ',115200n8'
+            fi
+            sep=' '
+        fi
+    done
 }
 
 find_xda() {
@@ -907,6 +920,7 @@ EOF
         fi
 
         # ipv6
+        has_inet6=true
         if is_slaac; then
             echo "iface $ethx inet6 auto" >>$conf_file
 
@@ -930,6 +944,14 @@ iface $ethx inet6 static
     address $ipv6_addr
     gateway $ipv6_gateway
 EOF
+        else
+            has_inet6=false
+        fi
+
+        # accept_ra / autoconf 只能写在 inet6 段里：落在 inet 段下 ifupdown 报 misplaced option，网络起不来
+        if ! $has_inet6 && [ "$distro" != alpine ] &&
+            { should_disable_accept_ra || should_disable_autoconf; }; then
+            echo "iface $ethx inet6 manual" >>$conf_file
         fi
 
         # dns
@@ -1117,9 +1139,8 @@ install_alpine() {
         set_ssh_keys_and_del_password /os
     fi
 
-    # 下载 fix-eth-name
-    download "$confhome/fix-eth-name.sh" /os/fix-eth-name.sh
-    download "$confhome/fix-eth-name.initd" /os/etc/init.d/fix-eth-name
+    cp /repo/fix-eth-name.sh /os/fix-eth-name.sh
+    cp /repo/fix-eth-name.initd /os/etc/init.d/fix-eth-name
     chmod +x /os/etc/init.d/fix-eth-name
     chroot /os rc-update add fix-eth-name boot
 
@@ -1162,7 +1183,7 @@ add_systemd_service() {
     local os_dir=$1
     local service_name=$2
 
-    download "$confhome/$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
+    cp "/repo/$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
     chroot "$os_dir" systemctl enable "$service_name.service"
 
     # aosc 首次开机会执行 preset-all
@@ -1183,7 +1204,7 @@ add_fix_eth_name_systemd_service() {
 
     # 无需执行 systemctl daemon-reload
     # 因为 chroot 下执行会提示 Running in chroot, ignoring command 'daemon-reload'
-    download "$confhome/fix-eth-name.sh" "$os_dir/fix-eth-name.sh"
+    cp /repo/fix-eth-name.sh "$os_dir/fix-eth-name.sh"
     add_systemd_service "$os_dir" fix-eth-name
 }
 
@@ -1391,9 +1412,10 @@ create_part() {
         apk add dosfstools
     fi
 
-    # 清除分区签名
-    # TODO: 先检测iso链接/各种链接
-    # wipefs -a /dev/$xda
+    # 先清掉整块盘上的旧签名：旧的分区表、文件系统、RAID 签名留着，新分区会被认错，alpine 会装不上
+    apk add wipefs
+    wipefs -a -f /dev/$xda
+    apk del wipefs
 
     # xda*1 星号用于 nvme0n1p1 的字母 p
     # shellcheck disable=SC2154
@@ -1719,30 +1741,14 @@ get_ucode_firmware_pkgs() {
     esac
 }
 
-remove_cloud_init() {
+# 只禁用不删：ubuntu-server-minimal、ubuntu-cloud-minimal 依赖 cloud-init，删它会连带 autoremove 掉这些元包
+disable_cloud_init() {
     os_dir=$1
 
-    if ! is_have_cmd_on_disk $os_dir cloud-init; then
-        return
+    if is_have_cmd_on_disk $os_dir cloud-init; then
+        info "Disable Cloud-Init"
+        touch $os_dir/etc/cloud/cloud-init.disabled
     fi
-
-    info "Remove Cloud-Init"
-
-    # systemctl is-enabled cloud-init-hotplugd.service 状态是 static
-    # disable 会出现一堆提示信息，也无法 disable
-    for unit in $(
-        chroot $os_dir systemctl list-unit-files |
-            grep -E '^(cloud-init|cloud-init-.*|cloud-config|cloud-final)\.(service|socket)' | grep enabled | awk '{print $1}'
-    ); do
-        # 服务不存在时会报错
-        if chroot $os_dir systemctl -q is-enabled "$unit"; then
-            chroot $os_dir systemctl disable "$unit"
-        fi
-    done
-
-    # ubuntu 25.04 开始有 cloud-init-base
-    chroot_apt_remove $os_dir cloud-init cloud-init-base
-    chroot_apt_autoremove $os_dir
 }
 
 modify_linux() {
@@ -1769,7 +1775,15 @@ modify_linux() {
         find_and_mount /boot
         find_and_mount /boot/efi
 
-        remove_cloud_init $os_dir
+        # 安装期间只用 prepare_debian_sources 探过的源；≤11 装完也用它，≥12 装完用回镜像自带的
+        cp $apt_dir/sources.list $os_dir/etc/apt/reinstall.list
+        apt_opts="-o Dir::Etc::SourceList=/etc/apt/reinstall.list -o Dir::Etc::SourceParts=-"
+        if [ "$releasever" -le 11 ]; then
+            cp $apt_dir/keyring.gpg $os_dir/usr/share/keyrings/freexian-archive-extended-lts.gpg
+            cp $apt_dir/sources.list $os_dir/etc/apt/sources.list
+        fi
+
+        disable_cloud_init $os_dir
 
         # 获取当前开启的 Components, 后面要用
         if [ -f $os_dir/etc/apt/sources.list.d/debian.sources ]; then
@@ -1778,21 +1792,8 @@ modify_linux() {
             comps=$(grep '^deb ' $os_dir/etc/apt/sources.list | head -1 | cut -d' ' -f4-)
         fi
 
-        # 标记所有内核为自动安装
-        pkgs=$(chroot $os_dir apt-mark showmanual linux-image* linux-headers*)
-        chroot $os_dir apt-mark auto $pkgs
-
-        # 安装合适的内核
-        # shellcheck disable=SC2154
-        kernel_package=$kernel
-        # 如果镜像自带内核跟最佳内核是同一种且有更新
-        # 则 apt install 只会进行更新，不会将包设置成 manual
-        # 需要再运行 apt install 才会将包设置成 manual
-        chroot_apt_install $os_dir "$kernel_package"
-        chroot_apt_install $os_dir "$kernel_package"
-
-        # 使用 autoremove 删除非最佳内核
-        chroot_apt_autoremove $os_dir
+        # 镜像自带的就是通用内核，只把它升到源里的最新版：镜像构建之后发的内核安全更新也装上
+        chroot_apt_install $os_dir "linux-image-$(get_axx64)"
 
         # 微码+固件
         if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
@@ -1862,6 +1863,10 @@ modify_linux() {
         # 动态时使用了 isc-dhcp-client 支持自动更新 resolv.conf
         # 另外 debian iso 不会安装 rdnssd
         keep_now_resolv_conf $os_dir
+
+        chroot $os_dir apt-get clean
+        rm $os_dir/etc/apt/reinstall.list
+        apt_opts=
     fi
 
     basic_init $os_dir
@@ -2051,6 +2056,28 @@ download_qcow() {
 # Ubuntu: GPG 签名 + SHA256（防御 mirror 入侵）
 # Debian: SHA512 完整性（防止下载损坏；Debian Cloud team 不发布 GPG 签名）
 ubuntu_image_key_fpr=D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81
+# Debian ≤11 装完用 Freexian ELTS 的源；它的 key 有到期日、续期后指纹不变，所以每次从 Freexian 现取、只认这个指纹
+freexian_key_url=https://deb.freexian.com/extended-lts/archive-key.gpg
+freexian_key_fpr=AB597C4F6F3380BD4B2BEBC2A07310D369055D5A
+
+# 导进 /tmp/verify 下的临时 keyring，不污染系统；用完 unset GNUPGHOME、apk del gnupg
+import_verify_key() {
+    apk add gnupg
+    GNUPGHOME=/tmp/verify/gpg
+    mkdir -p "$GNUPGHOME"
+    chmod 700 "$GNUPGHOME"
+    export GNUPGHOME
+    gpg --batch --import "$1"
+}
+
+# is_signed_by <指纹> <签名> [<数据>]：只认钉住的那把 key 出的签名，key 文件里混进第二把 key 也签不过
+is_signed_by() {
+    fpr=$1
+    shift
+    gpg --batch --status-fd 1 --verify "$@" |
+        awk -v fpr="$fpr" \
+            '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && ($3 == fpr || $NF == fpr) { ok = 1 } END { exit !ok }'
+}
 
 # 验签失败必须发生在 create_part 之前：那之后原系统已被擦掉、新系统又装不上
 fetch_qcow_hash() {
@@ -2064,22 +2091,11 @@ fetch_qcow_hash() {
     case "$distro" in
     ubuntu)
         info "Verify Ubuntu cloud image checksums (GPG)"
-        apk add gnupg
         download "$img_dir_url/SHA256SUMS" /tmp/verify/SHA256SUMS
         download "$img_dir_url/SHA256SUMS.gpg" /tmp/verify/SHA256SUMS.gpg
-        download "$confhome/keys/ubuntu-cloud.asc" /tmp/verify/ubuntu-cloud.asc
 
-        # 用临时 keyring，不污染系统
-        GNUPGHOME=/tmp/verify/gpg
-        mkdir -p "$GNUPGHOME"
-        chmod 700 "$GNUPGHOME"
-        export GNUPGHOME
-        gpg --batch --import /tmp/verify/ubuntu-cloud.asc
-
-        # 只认钉住的那把 key 出的签名：.asc 里混进第二把 key（confhome 被换）也签不过
-        if ! gpg --batch --status-fd 1 --verify /tmp/verify/SHA256SUMS.gpg /tmp/verify/SHA256SUMS |
-            awk -v fpr="$ubuntu_image_key_fpr" \
-                '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && ($3 == fpr || $NF == fpr) { ok = 1 } END { exit !ok }'; then
+        import_verify_key /repo/keys/ubuntu-cloud.asc
+        if ! is_signed_by "$ubuntu_image_key_fpr" /tmp/verify/SHA256SUMS.gpg /tmp/verify/SHA256SUMS; then
             error_and_exit "SHA256SUMS is not signed by the Ubuntu cloud image key $ubuntu_image_key_fpr"
         fi
         info false "GPG signature OK ($ubuntu_image_key_fpr)"
@@ -2112,6 +2128,53 @@ verify_qcow() {
         error_and_exit "Image hash mismatch: expected $qcow_expected_hash, got $actual_hash"
     fi
     info false "Image hash OK: $actual_hash"
+}
+
+# Debian 安装期间 apt 只读这里备好的源清单（apt_opts），不读镜像自带的：
+# 镜像里的 suite 被撤（如 *-backports）会让 apt-get update 失败，而那时盘已改写
+apt_dir=/apt-sources
+apt_opts=
+
+# 安装期间用的源，每行「地址 suite 组件」；≤11 官方已停止支持，用 Freexian ELTS 的完整镜像
+get_debian_suites() {
+    # shellcheck disable=SC2154
+    if [ "$releasever" -le 11 ]; then
+        echo "https://deb.freexian.com/extended-lts $codename main contrib non-free"
+    else
+        echo "https://deb.debian.org/debian $codename main non-free-firmware"
+        echo "https://deb.debian.org/debian $codename-updates main non-free-firmware"
+        echo "https://deb.debian.org/debian-security $codename-security main non-free-firmware"
+    fi
+}
+
+# 盘还没动时探好每个 suite、核好 Freexian 的 key：哪个取不到都该在这里停，而不是停在擦过的盘上
+prepare_debian_sources() {
+    info "Check Debian apt sources"
+    rm -rf $apt_dir /tmp/verify
+    mkdir -p $apt_dir /tmp/verify
+
+    keyring=/usr/share/keyrings/debian-archive-keyring.gpg
+    if [ "$releasever" -le 11 ]; then
+        keyring=/usr/share/keyrings/freexian-archive-extended-lts.gpg
+        download "$freexian_key_url" /tmp/verify/freexian.gpg
+        download "https://deb.freexian.com/extended-lts/dists/$codename/InRelease" /tmp/verify/InRelease
+        import_verify_key /tmp/verify/freexian.gpg
+        if ! is_signed_by "$freexian_key_fpr" /tmp/verify/InRelease; then
+            error_and_exit "Freexian $codename InRelease is not signed by $freexian_key_fpr"
+        fi
+        # 只导出钉住的那把，取回的文件里混进别的 key 也带不进新系统
+        gpg --batch --export "$freexian_key_fpr" >$apt_dir/keyring.gpg
+        unset GNUPGHOME
+        apk del gnupg
+    fi
+
+    while read -r uri suite comps; do
+        url=$uri/dists/$suite/InRelease
+        wget --spider "$url" || error_and_exit "Debian $suite is not available: $url"
+        echo "deb [signed-by=$keyring] $uri $suite $comps" >>$apt_dir/sources.list
+    done < <(get_debian_suites)
+    cat $apt_dir/sources.list
+    rm -rf /tmp/verify
 }
 
 connect_qcow() {
@@ -2186,7 +2249,7 @@ chroot_apt_update() {
 
     current_hash=$(cat $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/*.sources 2>/dev/null | md5sum)
     if ! [ "$saved_hash" = "$current_hash" ]; then
-        chroot $os_dir apt-get update
+        chroot $os_dir apt-get $apt_opts update
         saved_hash="$current_hash"
     fi
 }
@@ -2196,7 +2259,7 @@ chroot_apt_install() {
     shift
 
     chroot_apt_update $os_dir
-    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get install -y "$@"
+    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get $apt_opts install -y "$@"
 }
 
 chroot_apt_remove() {
@@ -2213,13 +2276,13 @@ chroot_apt_remove() {
     for pkg in "$@"; do
         # apt list 会提示 WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
         # 但又不能用 apt-get list
-        if chroot $os_dir apt list --installed "$pkg" | grep -q installed; then
+        if chroot $os_dir apt $apt_opts list --installed "$pkg" | grep -q installed; then
             pkgs="$pkgs $pkg"
         fi
     done
 
     # 删除 resolvconf 时会弹出建议重启，因此添加 noninteractive
-    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get remove --purge --allow-remove-essential -y $pkgs
+    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get $apt_opts remove --purge --allow-remove-essential -y $pkgs
 }
 
 chroot_apt_autoremove() {
@@ -2248,7 +2311,7 @@ chroot_apt_autoremove() {
     }
 
     change_confs change
-    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get autoremove --purge -y
+    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get $apt_opts autoremove --purge -y
     change_confs restore
 }
 
@@ -2297,13 +2360,6 @@ EOF
             fi
         fi
 
-        # 自带内核：
-        # 常规版本             generic
-        # minimal 20.04/22.04 kvm      # 后台 vnc 无显示
-        # minimal 24.04       virtual
-
-        # debian cloud 内核不支持 ahci，ubuntu virtual 支持
-
         # 标记所有内核为自动安装
         # 注意排除 linux-base
         # 返回值始终为 0
@@ -2330,10 +2386,10 @@ EOF
         fi
 
         # 网络配置：18.04 起都是 netplan
-        # 避免删除 cloud-init 后，minimal 镜像的 netplan.io 被 autoremove
+        # 避免 minimal 镜像的 netplan.io 被 autoremove
         chroot $os_dir apt-mark manual netplan.io
 
-            # 生成 cloud-init 网络配置
+        # 生成 cloud-init 网络配置
         create_cloud_init_network_config $os_dir/net.cfg
 
         # ubuntu 18.04 cloud-init 版本 23.1.2，因此不用处理 onlink
@@ -2408,6 +2464,8 @@ EOF
             sed -i '/[[:space:]]\/boot\/efi[[:space:]]/d' $os_dir/etc/fstab
         fi
 
+        # generic 带进来的 linux-firmware 约 600 MB，下载的 .deb 不清会再占同样大
+        chroot $os_dir apt-get clean
         restore_resolv_conf $os_dir
     }
 
@@ -2563,9 +2621,7 @@ EOF
     # 基本配置
     basic_init /os
 
-    # 最后才删除 cloud-init
-    # 因为生成 netplan/sysconfig 网络配置要用目标系统的 cloud-init
-    remove_cloud_init /os
+    disable_cloud_init /os
 
     # 删除 swapfile
     swapoff -a
@@ -2725,23 +2781,9 @@ is_ubuntu_lts() {
     [ $((major % 2)) = 0 ] && [ $minor = 04 ]
 }
 
+# 虚拟机上也装 generic：virtual 不带 linux-modules-extra，6.8 及更早的内核里 GCP 的 gve、Azure 的 mana 只在那里
 get_ubuntu_kernel_flavor() {
-    # 20.04/22.04 kvm 内核 vnc 没显示
-    # 24.04 kvm = virtual
-    # linux-image-virtual = linux-image-6.x-generic
-    # linux-image-generic = linux-image-6.x-generic + amd64-microcode + intel-microcode + linux-firmware + linux-modules-extra-generic
-
-    # TODO: ISO virtual-hwe-24.04 不安装 linux-image-extra-virtual-hwe-24.04 不然会花屏
-
-    # https://github.com/systemd/systemd/blob/main/src/basic/virt.c
-    # https://github.com/canonical/cloud-init/blob/main/tools/ds-identify
-    # http://git.annexia.org/?p=virt-what.git;a=blob;f=virt-what.in;hb=HEAD
-    is_ubuntu_lts && suffix=-hwe-$releasever || suffix=
-    if is_virt; then
-        echo virtual$suffix
-    else
-        echo generic$suffix
-    fi
+    is_ubuntu_lts && echo generic-hwe-$releasever || echo generic
 }
 
 trans() {
@@ -2782,6 +2824,7 @@ trans() {
         ;;
     debian)
         fetch_qcow_hash
+        prepare_debian_sources
         create_part
         download_qcow
         dd_qcow

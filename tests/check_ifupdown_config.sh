@@ -151,6 +151,15 @@ iface eth0 inet6 static
     pre-up echo 0 >/proc/sys/net/ipv6/conf/eth0/accept_ra
     pre-up echo 0 >/proc/sys/net/ipv6/conf/eth0/autoconf"
 
+    netconf dhcpv4=1 ipv4_has_internet=1 should_disable_accept_ra=1 should_disable_autoconf=1
+    expect "ra and autoconf off without an ipv6 stanza get inet6 manual" "$shell" debian 12 "
+# mac 52:54:00:12:34:56
+auto eth0
+iface eth0 inet dhcp
+iface eth0 inet6 manual
+    accept_ra 0
+    autoconf 0"
+
     netconf dhcpv4=1 dhcpv6_or_slaac=1 ipv6_has_internet=1
     ra Yes No No 2606:4700:4700::1111
     expect "ipv4 without internet gets no stanza" "$shell" debian 12 "

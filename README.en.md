@@ -12,9 +12,11 @@ machine comes back up in a temporary Alpine, then installs the target system
 from there. **This erases disks** — back up first, and try it on a machine you
 can rebuild.
 
-Four targets: Debian 11/12/13, Ubuntu 20.04/22.04/24.04/25.10, Alpine
-3.20–3.23, and `dd` of any raw image (over `http(s)://` or a magnet link).
-Debian and Ubuntu go through official cloud images.
+Four targets: Debian 10/11/12/13, Ubuntu 18.04/20.04/22.04/24.04/26.04, Alpine
+3.21–3.23, and `dd` of any raw image (over `http(s)://` or a magnet link).
+Debian and Ubuntu go through official cloud images. Debian 10 and 11 are past
+official support, so the installed system uses Freexian's ELTS repository
+(`deb.freexian.com`); its signing key fingerprint is pinned in the script.
 
 ## Install
 
@@ -113,12 +115,13 @@ both the log and the web output.
   the image has to arrive with a working configuration. It also **doesn't check
   disk capacity** first.
 - **Network has to be auto-detectable** (IPv4 or IPv6 will do); if it can't work
-  out an address, it exits.
+  out an address, it exits. An IPv6-only host needs `--commit <SHA>`: resolving the
+  branch to a commit goes through `api.github.com`, which has no IPv6 address.
 - **`--minimal` only affects Ubuntu**, and is silently ignored for Debian.
 - **DD-ing a non-EFI image on an EFI machine asks for confirmation**, which will
   hang an unattended run.
-- **No tags and no version numbers.** To pin a known-good state, use
-  `--commit <SHA>`.
+- **`--commit` takes a 40-hex SHA, not a tag name.** The repository has tags
+  (`v0.1.0`, for one); to pin a tag, pass the SHA it points to.
 
 ## Differences from upstream
 

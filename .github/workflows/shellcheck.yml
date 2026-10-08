@@ -27,7 +27,6 @@ jobs:
           shellcheck trans.sh
           shellcheck initrd-network.sh
           shellcheck fix-eth-name.sh
-          shellcheck ttys.sh
           shellcheck fix-eth-name.initd
           shellcheck tests/lib.sh
           shellcheck tests/check_undefined_calls.sh
@@ -35,6 +34,7 @@ jobs:
           shellcheck tests/check_ifupdown_config.sh
           shellcheck tests/check_part_layout.sh
           shellcheck tests/check_qcow_verify.sh
+          shellcheck tests/check_debian_sources.sh
           shellcheck tests/check_dd_pipeline.sh
           shellcheck tests/check_sync_time.sh
           shellcheck tests/check_find_xda.sh
@@ -43,6 +43,6 @@ jobs:
         run: |
           bash tests/check_undefined_calls.sh \
             reinstall.sh trans.sh initrd-network.sh fix-eth-name.sh \
-            ttys.sh fix-eth-name.initd
+            fix-eth-name.initd
       - name: Check the stage 1 / stage 2 command-line contract
         run: bash tests/check_cmdline_contract.sh

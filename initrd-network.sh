@@ -11,6 +11,7 @@ ipv4_gateway=$3
 ipv6_addr=$4
 ipv6_gateway=$5
 
+DHCP_TIMEOUT=15
 DNS_FILE_TIMEOUT=5
 TEST_TIMEOUT=10
 
@@ -256,9 +257,9 @@ sleep 1
 
 # 开启 dhcpv4/v6
 # 用 udhcpc 不用 dhcpcd：dhcpcd 会按租约过期移除 IP，而这里不让 dhcp 客户端常驻后台
-# 已知 h3c 移动云电脑上 udhcpc 会反复提示 sending select，拿不到 ipv6
-udhcpc -i "$ethx" -f -q -n || true
-udhcpc6 -i "$ethx" -f -q -n || true
+# 限时：天翼、h3c 云电脑上 udhcpc 会一直重复 sending select 不退出，配网就卡死在这里
+timeout $DHCP_TIMEOUT udhcpc -i "$ethx" -f -q -n || true
+timeout $DHCP_TIMEOUT udhcpc6 -i "$ethx" -f -q -n || true
 sleep $DNS_FILE_TIMEOUT # 好像不用等待写入 dns，但是以防万一
 
 # 等待slaac
