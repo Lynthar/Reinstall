@@ -39,6 +39,8 @@ jobs:
           shellcheck tests/check_sync_time.sh
           shellcheck tests/check_find_xda.sh
           shellcheck tests/check_boot_entry.sh
+          shellcheck tests/check_failure_paths.sh
+          shellcheck tests/check_root_password.sh
           shellcheck tests/check_mirrors.sh
       - name: Check for calls to undefined functions
         run: |

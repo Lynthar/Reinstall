@@ -256,15 +256,15 @@ insert_into_file() {
 
     line_num=$(grep "$@" -n "$regex_to_find" "$file" | cut -d: -f1)
 
-    found_count=$(echo "$line_num" | wc -l)
-    if [ ! "$found_count" -eq 1 ]; then
-        return 1
+    # 零匹配时 line_num 为空，echo 出的空行也算一行，所以先判空
+    if [ -z "$line_num" ] || [ "$(echo "$line_num" | wc -l)" -ne 1 ]; then
+        error_and_exit "Expected exactly one line matching '$regex_to_find' in $file."
     fi
 
     case "$location" in
     before) line_num=$((line_num - 1)) ;;
     after) ;;
-    *) return 1 ;;
+    *) error_and_exit "Unknown location: $location" ;;
     esac
 
     sed -i "${line_num}r /dev/stdin" "$file"
@@ -2137,6 +2137,12 @@ EOF
             echo "modloop does not match the sha256 fetched over HTTPS. Not booting it."
             exec /bin/busybox sh
         fi
+EOF
+
+    # hack 6 不装 tiny-cloud。initramfs 见到卷标 cidata 的盘就给临时系统装上它，它会执行
+    # 厂商 user-data（改 sshd 允许密码登录、跑 runcmd）并常驻 udhcpc，绕开我们的 key 与网络设置
+    insert_into_file init after '^want_tiny_cloud\(\) \{' <<EOF
+        return 1
 EOF
 }
 

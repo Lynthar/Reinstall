@@ -14,6 +14,8 @@ on:
       - "tests/check_find_xda.sh"
       - "tests/check_ifupdown_config.sh"
       - "tests/check_boot_entry.sh"
+      - "tests/check_failure_paths.sh"
+      - "tests/check_root_password.sh"
       - "tests/lib.sh"
   pull_request:
     paths:
@@ -28,12 +30,14 @@ on:
       - "tests/check_find_xda.sh"
       - "tests/check_ifupdown_config.sh"
       - "tests/check_boot_entry.sh"
+      - "tests/check_failure_paths.sh"
+      - "tests/check_root_password.sh"
       - "tests/lib.sh"
 permissions:
   contents: read
 jobs:
   tests:
-    name: 分区角色、镜像验签、Debian 源、DD 管道、时间同步、选盘、网络配置与引导项
+    name: 分区角色、镜像验签、Debian 源、DD 管道、时间同步、选盘、网络配置、引导项、失败路径与 root 密码
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,6 +50,8 @@ jobs:
       - run: bash tests/check_find_xda.sh
       - run: bash tests/check_ifupdown_config.sh
       - run: bash tests/check_boot_entry.sh
+      - run: bash tests/check_failure_paths.sh
+      - run: bash tests/check_root_password.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest

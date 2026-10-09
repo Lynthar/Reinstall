@@ -149,7 +149,11 @@ retry() {
         else
             ret=$?
             if [ $i -ge $max_try ]; then
-                return $ret
+                # 让失败的命令自己触发 ERR，别用 return $ret：busybox ash 里 return 非零触发的
+                # 陷阱只跑 trap_err 的第一条命令就退出，报错与重试提示全丢。条件里调用时没有陷阱，
+                # 由不带参数的 return 带回 $ret
+                (exit $ret)
+                return
             fi
             sleep $interval
         fi
@@ -834,15 +838,15 @@ insert_into_file() {
     else
         line_num=$(grep "$@" -n "$regex_to_find" "$file" | cut -d: -f1)
 
-        found_count=$(echo "$line_num" | wc -l)
-        if [ ! "$found_count" -eq 1 ]; then
-            return 1
+        # 零匹配时 line_num 为空，echo 出的空行也算一行，所以先判空
+        if [ -z "$line_num" ] || [ "$(echo "$line_num" | wc -l)" -ne 1 ]; then
+            error_and_exit "Expected exactly one line matching '$regex_to_find' in $file."
         fi
 
         case "$location" in
         before) line_num=$((line_num - 1)) ;;
         after) ;;
-        *) return 1 ;;
+        *) error_and_exit "Unknown location: $location" ;;
         esac
 
         sed -i "${line_num}r /dev/stdin" "$file"
@@ -1136,7 +1140,8 @@ install_alpine() {
 
     # 设置公钥
     if is_need_set_ssh_keys; then
-        set_ssh_keys_and_del_password /os
+        set_ssh_keys /os
+        disable_root_password /os
     fi
 
     cp /repo/fix-eth-name.sh /os/fix-eth-name.sh
@@ -1252,7 +1257,8 @@ basic_init() {
 
     # 公钥/密码
     if is_need_set_ssh_keys; then
-        set_ssh_keys_and_del_password $os_dir
+        set_ssh_keys $os_dir
+        disable_root_password $os_dir
     else
         change_root_password $os_dir
         allow_root_password_login $os_dir
@@ -1939,10 +1945,8 @@ create_swap() {
     swapfile=$2
 
     if ! grep $swapfile /proc/swaps; then
-        # 用兼容 btrfs 的方式创建 swapfile
-        truncate -s 0 $swapfile
-        # 如果分区不支持 chattr +C 会显示错误但返回值是 0
-        chattr +C $swapfile 2>/dev/null
+        # 不要 chattr +C：它只对 btrfs 有意义，目标根分区都是 ext4，
+        # Live OS 的 e2fsprogs chattr 在 ext4 上返回 1，低内存机器会在擦盘后中止
         fallocate -l ${swapsize}M $swapfile
         chmod 0600 $swapfile
         mkswap $swapfile
@@ -1950,19 +1954,21 @@ create_swap() {
     fi
 }
 
-set_ssh_keys_and_del_password() {
+set_ssh_keys() {
     os_dir=$1
     info 'set ssh keys'
 
-    # 添加公钥
     (
         umask 077
         mkdir -p $os_dir/root/.ssh
         cat /configs/ssh_keys >$os_dir/root/.ssh/authorized_keys
     )
+}
 
-    # 删除密码
-    chroot $os_dir passwd -d root
+# 装好的系统只留 key 登录：空密码会让控制台与 su 不问密码直接进 root。
+# 用 * 而不用 passwd -l 的 !：不走 PAM 的 sshd（alpine）把 ! 当锁定，连 key 都拒
+disable_root_password() {
+    sed -i 's/^root:[^:]*:/root:*:/' $1/etc/shadow
 }
 
 # 除了 alpine 都会用到
@@ -2911,7 +2917,9 @@ fi
 
 # 设置密码，添加开机启动 + 开启 ssh 服务
 if is_need_set_ssh_keys; then
-    set_ssh_keys_and_del_password /
+    set_ssh_keys /
+    # 临时系统保留空密码：网络起不来时，还能从面板控制台以 root 登进来救
+    passwd -d root
     printf '\n' | setup-sshd
 else
     change_root_password /
