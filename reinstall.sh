@@ -11,7 +11,7 @@ confhome=https://raw.githubusercontent.com/Lynthar/Reinstall/main
 insecure_opt=
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0006
+SCRIPT_VERSION=1BBD640D-E5C3-4147-80E9-E747F8E7512A
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -41,8 +41,9 @@ if [ -z "$BASH" ]; then
     fi
 fi
 
-# 记录日志，过滤含有 password 的行
-exec > >(tee >(grep -iv password >>/reinstall.log)) 2>&1
+# 记录日志，过滤含有 password 的行。日志进程不理 Ctrl+C、kill 与断线：这些信号发给整个进程组，
+# 日志进程先死的话，脚本退出前撤销时一写输出就被 SIGPIPE 杀掉，什么也没撤
+exec > >(trap '' INT TERM HUP && exec tee >(grep -iv password >>/reinstall.log)) 2>&1
 THIS_SCRIPT=$(readlink -f "$0")
 trap 'trap_err $LINENO $?' ERR
 
@@ -60,6 +61,7 @@ Usage: ./reinstall.sh debian   10|11|12|13
                       ubuntu   18.04|20.04|22.04|24.04|26.04 [--minimal]
                       alpine   3.21|3.22|3.23
                       dd       --img="https://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
+                      reset    (before rebooting: undo what the last run changed)
 
        Options:       [--password PASSWORD | --password-stdin]
                       [--ssh-key KEY]
@@ -1679,10 +1681,8 @@ install_grub_win() {
             cat $grub_dir/i386-pc/lnxboot.img /cygdrive/$c/grub/i386-pc/core.img >/cygdrive/$c/g2ldr
         fi
 
-        # 添加引导
-        # 脚本可能不是首次运行，所以先删除原来的
-        boot_entry_id='{1c41f649-1637-52f1-aea8-f96bfebeecc8}'
-        bcdedit /enum all | grep -a $boot_entry_id && bcdedit /delete $boot_entry_id
+        # 添加引导；上次运行留下的同 id 条目已由 undo_boot_changes 删掉
+        boot_entry_id=$(get_win_bios_entry_id)
         bcdedit /create $boot_entry_id /d "$(get_entry_name)" /application bootsector
         bcdedit /set $boot_entry_id device partition=$c:
         bcdedit /set $boot_entry_id path \\g2ldr
@@ -1690,26 +1690,26 @@ install_grub_win() {
     fi
 }
 
-find_grub_extlinux_cfg() {
-    dir=$1
-    filename=$2
-    keyword=$3
-
+# 列出目录 $1（可带通配符，不存在的跳过）下名为 $2、有一行匹配 $3 的文件
+find_cfgs() {
+    local dir
     # 当 ln -s /boot/grub /boot/grub2 时
     # find /boot/ 会自动忽略 /boot/grub2 里面的文件
-    cfgs=$(
-        # 只要 $dir 存在
-        # 无论是否找到结果，返回值都是 0
-        find $dir \
-            -type f -name $filename \
-            -exec grep -E -l "$keyword" {} \;
-    )
+    for dir in $1; do
+        if [ -d "$dir" ]; then
+            find "$dir" -type f -name "$2" -exec grep -E -l -- "$3" {} \;
+        fi
+    done
+}
 
-    count="$(wc -l <<<"$cfgs")"
-    if [ "$count" -eq 1 ]; then
+find_grub_extlinux_cfg() {
+    cfgs=$(find_cfgs "$@")
+
+    # 零个时 cfgs 为空，wc -l 仍数出一行，所以先判空
+    if [ -n "$cfgs" ] && [ "$(wc -l <<<"$cfgs")" -eq 1 ]; then
         echo "$cfgs"
     else
-        error_and_exit "Find $count $filename."
+        error_and_exit "Expected exactly one $2 under $1 matching '$3', found: ${cfgs:-none}"
     fi
 }
 
@@ -1755,7 +1755,12 @@ load_grubenv_if_not_loaded() {
     fi
 }
 
-# 覆盖写 $1
+# 我们写进别人文件（custom.cfg、extlinux.conf）的段落夹在 BEGIN / END 两行之间，撤销时整段删掉
+get_mark() {
+    echo "# $1 reinstall"
+}
+
+# 往 $1 追加一段带标记的菜单项：$1 可能是用户自己的 custom.cfg，不能覆盖
 write_grub_entry() {
     local cfg=$1 dir vmlinuz initrd
     dir=$(get_root_dir_for_bootloader)
@@ -1765,7 +1770,8 @@ write_grub_entry() {
     info grub
     echo $cfg
 
-    get_function_content load_grubenv_if_not_loaded >$cfg
+    get_mark BEGIN >>$cfg
+    get_function_content load_grubenv_if_not_loaded >>$cfg
 
     # 实测 centos 7 lvm 要手动加载 lvm 模块
     # 原系统为 openeuler 云镜像，需要添加 --unrestricted，否则要输入密码
@@ -1786,6 +1792,7 @@ menuentry "$(get_entry_name)" --unrestricted {
     initrd $initrd
 }
 EOF
+    get_mark END >>$cfg
 }
 
 # 引导项按路径分五种，每种一对函数：write_boot_<路径> 写好引导器、配置与内核文件，arm_boot_<路径> 设一次性启动。
@@ -1818,7 +1825,8 @@ arm_boot_linux_efi() {
     efibootmgr --bootnext $boot_entry_id
 }
 
-write_boot_linux_grub() {
+# 定下本机 grub 的命令前缀 $grub（grub / grub2）与主配置文件 $grub_cfg
+find_linux_grub() {
     if is_have_cmd update-grub; then
         # alpine debian ubuntu
         grub_cfg=$(grep -o '[^ ]*grub.cfg' "$(get_cmd_path update-grub)" | head -1)
@@ -1827,7 +1835,6 @@ write_boot_linux_grub() {
         grub_cfg=$(find_grub_extlinux_cfg '/boot/grub*' grub.cfg 'menuentry|blscfg')
     fi
 
-    # 重新生成 grub.cfg，因为有些机子例如hython debian的grub.cfg少了40_custom 41_custom
     if is_have_cmd grub2-mkconfig; then
         grub=grub2
     elif is_have_cmd grub-mkconfig; then
@@ -1835,7 +1842,30 @@ write_boot_linux_grub() {
     else
         error_and_exit "grub not found"
     fi
+}
 
+# GRUB 启动时要改写 grubenv 才清得掉 next_entry。btrfs（openSUSE 打了补丁、grubenv 里有 env_block= 的除外）、
+# ZFS 与 LVM / RAID / 加密盘上它写不了，一次性启动就成了常驻，写盘前失败也回不到原系统，所以写盘前就拒绝
+assert_grubenv_writable() {
+    local dir fs layers
+    find_linux_grub
+    dir=$(dirname "$grub_cfg")
+    fs=$($grub-probe --target=fs "$dir")
+    layers=$($grub-probe --target=abstraction "$dir")
+    if { [ "$fs" = btrfs ] && ! grep -qs '^env_block=' "$dir/grubenv"; } || [ "$fs" = zfs ]; then
+        error_and_exit "GRUB cannot write $dir/grubenv on $fs, so the one-time boot entry would stay:
+every reboot would start the temporary system again. Not supported; put /boot on ext4 or xfs."
+    fi
+    if [ -n "$layers" ]; then
+        error_and_exit "GRUB cannot write $dir/grubenv through $layers, so the one-time boot entry would stay:
+every reboot would start the temporary system again. Not supported; put /boot on a plain partition."
+    fi
+}
+
+write_boot_linux_grub() {
+    find_linux_grub
+
+    # 重新生成 grub.cfg，因为有些机子例如hython debian的grub.cfg少了40_custom 41_custom
     # nixos 手动执行 grub-mkconfig -o /boot/grub/grub.cfg 会丢失系统启动条目
     # 正确的方法是修改 configuration.nix 的 boot.loader.grub.extraEntries
     # 但是修改 configuration.nix 不是很好，因此改成修改 grub.cfg
@@ -1856,6 +1886,10 @@ write_boot_linux_grub() {
 
 arm_boot_linux_grub() {
     $grub-reboot "$(get_entry_name)"
+    # grub-reboot 写不进 grubenv 也以 0 退出（脚本末尾写死了 exit 0），设没设上要读回来核
+    if ! $grub-editenv - list | grep -qxF "next_entry=$(get_entry_name)"; then
+        error_and_exit "grub-reboot did not set next_entry in grubenv, so the next boot would not start the temporary system."
+    fi
 }
 
 write_boot_linux_extlinux() {
@@ -1879,16 +1913,18 @@ write_boot_linux_extlinux() {
 
     # 不起作用
     # 好像跟 extlinux --once 有冲突
-    sed -i "/^MENU HIDDEN/d" $extlinux_cfg
-    sed -i "/^TIMEOUT /d" $extlinux_cfg
+    # 原行就地注释掉、带上记号，撤销时原样放回
+    sed -i -E 's/^(MENU HIDDEN|TIMEOUT )/# reinstall: &/' $extlinux_cfg
 
     del_empty_lines <<EOF | tee -a $extlinux_cfg
+$(get_mark BEGIN)
 TIMEOUT 5
 LABEL reinstall
   MENU LABEL $(get_entry_name)
   LINUX ${dir}reinstall-vmlinuz
   INITRD ${dir}reinstall-initrd
   $([ -n "$cmdline" ] && echo "APPEND $cmdline")
+$(get_mark END)
 EOF
 
     if is_boot_in_separate_partition; then
@@ -1925,6 +1961,134 @@ install_boot_entry() {
     path=$(get_boot_path)
     write_boot_$path
     arm_boot_$path
+}
+
+# win_bios 的 BCD 条目用固定 id，撤销时按它找
+get_win_bios_entry_id() {
+    echo '{1c41f649-1637-52f1-aea8-f96bfebeecc8}'
+}
+
+# kexec 开着时 reboot 直接跳进当前内核、不经引导器，一次性启动项就白设了。
+# 改过的行带上记号，restore_kexec_load 只改回带记号的
+disable_kexec_load() {
+    sed -i 's/^LOAD_KEXEC=true/LOAD_KEXEC=false # reinstall: was true/' "$1"
+}
+
+restore_kexec_load() {
+    sed -i 's/^LOAD_KEXEC=false # reinstall: was true/LOAD_KEXEC=true/' "$1"
+}
+
+undo_grub_entries() {
+    local cfg editenv
+    for cfg in $(find_cfgs /boot custom.cfg '^menuentry "reinstall \('); do
+        if grep -qxF "$(get_mark BEGIN)" "$cfg"; then
+            sed -i "/^$(get_mark BEGIN)\$/,/^$(get_mark END)\$/d" "$cfg"
+            if ! [ -s "$cfg" ]; then
+                rm -f "$cfg"
+            fi
+        else
+            # 旧版整份覆盖写 custom.cfg、不带标记：有我们的菜单项又没标记的，整份都是我们的
+            rm -f "$cfg"
+        fi
+    done
+
+    # grub-reboot 设的一次性启动只清我们的，别人设的不动
+    for editenv in grub-editenv grub2-editenv; do
+        if is_have_cmd $editenv && $editenv - list 2>/dev/null | grep -q '^next_entry=reinstall ('; then
+            $editenv - unset next_entry
+        fi
+    done
+}
+
+undo_extlinux_entries() {
+    local cfg dir
+    for cfg in $(find_cfgs /boot extlinux.conf "^$(get_mark BEGIN)\$|^# reinstall: "); do
+        sed -i -e "/^$(get_mark BEGIN)\$/,/^$(get_mark END)\$/d" -e 's/^# reinstall: //' "$cfg"
+        dir=$(dirname "$cfg")
+        rm -f "$dir/reinstall-vmlinuz" "$dir/reinstall-initrd"
+        if is_have_cmd extlinux; then
+            extlinux --clear-once "$dir"
+        fi
+    done
+}
+
+undo_efi_entries() {
+    local dir entries ours next num
+    for dir in $(get_maybe_efi_dirs_in_linux); do
+        rm -rf "$dir/EFI/reinstall"
+    done
+
+    # 建条目时装上了 efibootmgr：没有它就不会有我们的条目
+    if ! is_have_cmd efibootmgr; then
+        return
+    fi
+    entries=$(efibootmgr)
+    ours=$(grep_efi_entry <<<"$entries" | grep ' reinstall (' | grep_efi_index)
+    next=$(sed -n 's/^BootNext: //p' <<<"$entries")
+    if [ -n "$next" ] && grep -qx "$next" <<<"$ours"; then
+        efibootmgr --quiet --delete-bootnext
+    fi
+    for num in $ours; do
+        efibootmgr --quiet --bootnum $num --delete-bootnum
+    done
+}
+
+undo_boot_win() {
+    rm -f /cygdrive/$c/grub.cfg /cygdrive/$c/g2ldr
+    # win_bios 的 grub-install 装在 C:\grub，里面是我们的菜单项才删整个目录
+    if grep -qs '^menuentry "reinstall (' /cygdrive/$c/grub/grub.cfg; then
+        rm -rf /cygdrive/$c/grub
+    fi
+    # EFI 分区要挂上盘符才看得见，只清已挂上的
+    rm -rf /cygdrive/?/EFI/reinstall
+
+    if is_efi; then
+        bcdedit /set '{fwbootmgr}' bootsequence '{bootmgr}'
+        bcdedit /enum bootmgr | grep -a -B3 'reinstall' | awk '{print $2}' | grep '{.*}' |
+            xargs -I {} cmd /c bcdedit /delete {}
+    elif bcdedit /enum all | grep -aqF "$(get_win_bios_entry_id)"; then
+        bcdedit /delete "$(get_win_bios_entry_id)"
+    fi
+}
+
+# 撤销 stage 1 对宿主做过的全部改动，按名字与记号找，不看这次探测出的引导路径：上次走的可能是另一条。
+# 每次安装开头先跑一遍（重跑才不叠加），reinstall.sh reset 与 stage 1 中途失败时也是它。
+# stage 1 往宿主上新写的东西都要在这里撤得掉（tests/check_boot_entry.sh 装了再撤、比对文件）
+undo_boot_changes() {
+    if is_in_windows; then
+        undo_boot_win
+    else
+        undo_grub_entries
+        undo_extlinux_entries
+        if is_efi; then
+            undo_efi_entries
+        fi
+        if [ -f /etc/default/kexec ]; then
+            restore_kexec_load /etc/default/kexec
+        fi
+    fi
+    rm -f /reinstall-vmlinuz /reinstall-initrd
+}
+
+# EXIT 陷阱：stage 1 失败退出时撤销。撤销不能放进 if 或 || 里：那里 set -e 失效，撤了一半也当成功
+undo_if_failed() {
+    local ret=$? undone
+    if [ $ret -eq 0 ]; then
+        return
+    fi
+    # 再按一次 Ctrl+C 也要撤完，撤一半比不撤更难收拾
+    trap '' INT TERM HUP
+    warn "Stage 1 did not finish. Undoing its changes to the boot configuration."
+    set +e
+    (
+        set -e
+        undo_boot_changes
+    )
+    undone=$?
+    if [ $undone -ne 0 ]; then
+        error "The undo did not finish. Run: bash $0 reset"
+    fi
+    exit $ret
 }
 
 # 空格、&、用户输入的网址要加引号，否则 grub 无法正确识别
@@ -2041,6 +2205,8 @@ mod_initrd_alpine() {
     modloop_file=$tmp/modloop_file
     curl -Lo $modloop_file "${nextos_modloop/#http:/https:}"
     modloop_sha256=$(sha256sum $modloop_file | awk '{print $1}')
+    # 低内存装 alpine 会删掉 modloop，trans.sh 重跑时按它核对取回的那份
+    echo "$modloop_sha256" >$initrd_dir/configs/modloop_sha256
 
     # hack 1 v3.19 和之前的 virt 内核需添加 ipv6 模块
     if virt_dir=$(ls -d $initrd_dir/lib/modules/*-virt 2>/dev/null); then
@@ -2425,8 +2591,9 @@ while true; do
         shift 2
         ;;
     --password-stdin)
-        # 从 stdin 读密码，不暴露在 ps 输出
-        IFS= read -r password
+        # 从 stdin 读密码，不暴露在 ps 输出。末尾没有换行时 read 返回 1 但值已读到
+        # （README 的 printf '%s' 就是这样），空不空由下一行判
+        IFS= read -r password || true
         [ -n "$password" ] || error_and_exit "Empty password from stdin"
         shift
         ;;
@@ -2533,6 +2700,14 @@ EOF
         ;;
     esac
 done
+
+# 反悔：重启之前撤销上次运行对宿主的改动。不联网，其余参数一概不看
+if [ "$*" = reset ]; then
+    undo_boot_changes
+    rm -rf "$tmp"
+    info false "Reset done. The next boot starts the current system."
+    exit 0
+fi
 
 # 检查目标系统名
 verify_os_name "$@"
@@ -2653,32 +2828,20 @@ esac
 find_main_disk
 build_cmdline
 
-# 删除之前的条目
-# bios 无论什么情况都用到 grub，所以不用处理
-if is_efi; then
-    if is_in_windows; then
-        rm -f /cygdrive/$c/grub.cfg
-
-        bcdedit /set '{fwbootmgr}' bootsequence '{bootmgr}'
-        bcdedit /enum bootmgr | grep -a -B3 'reinstall' | awk '{print $2}' | grep '{.*}' |
-            xargs -I {} cmd /c bcdedit /delete {}
-    else
-        # shellcheck disable=SC2046
-        # 如果 nixos 的 efi 挂载到 /efi，则不会生成 /boot 文件夹
-        # find 不存在的路径会报错退出
-        find $(get_maybe_efi_dirs_in_linux) $([ -d /boot ] && echo /boot) \
-            -type f -name 'custom.cfg' -exec rm -f {} \;
-
-        install_pkg efibootmgr
-        efibootmgr | grep -q 'BootNext:' && efibootmgr --quiet --delete-bootnext
-        efibootmgr | grep_efi_entry | grep 'reinstall' | grep_efi_index |
-            xargs -I {} efibootmgr --quiet --bootnum {} --delete-bootnum
-    fi
+if [ "$(get_boot_path)" = linux_grub ]; then
+    assert_grubenv_writable
 fi
+
+# 先撤掉上次运行留下的。从这里起改动宿主：之后任何失败（含 Ctrl+C）退出前都撤销，不留装了一半的引导项
+undo_boot_changes
+trap undo_if_failed EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # 有的机器开启了 kexec，例如腾讯云轻量 debian，要禁用
 if [ -f /etc/default/kexec ]; then
-    sed -i 's/LOAD_KEXEC=true/LOAD_KEXEC=false/' /etc/default/kexec
+    disable_kexec_load /etc/default/kexec
 fi
 
 # 下载 nextos 内核
@@ -2693,6 +2856,7 @@ curl -Lo /reinstall-initrd $nextos_initrd
 mod_initrd
 
 install_boot_entry
+trap - EXIT INT TERM HUP
 
 info 'info'
 echo "$distro $releasever"
@@ -2715,6 +2879,7 @@ elif is_use_dd; then
 else
     echo "Reboot to start the installation."
 fi
+echo "Or run 'bash $0 reset' now to undo it."
 
 if is_in_windows; then
     echo 'You can run this command to reboot:'

@@ -10,7 +10,7 @@ set -eE
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0006
+SCRIPT_VERSION=1BBD640D-E5C3-4147-80E9-E747F8E7512A
 
 TRUE=0
 FALSE=1
@@ -404,6 +404,23 @@ ensure_service_started() {
     fi
 }
 
+# 低内存装 alpine 时删掉了 modloop；重跑时 modloop 服务会自己走明文重下、不核对。
+# 这里先取回并按 stage 1 经 HTTPS 算的哈希核对，服务见 /lib 下已有同名文件就只挂载
+start_modloop() {
+    local url file
+    url=$(xargs -n1 </proc/cmdline | sed -n 's/^modloop=//p')
+    file=/lib/${url##*/}
+    if ! rc-service -q modloop status && ! [ -f "$file" ]; then
+        retry 5 wget -O "$file.part" "$url"
+        if ! echo "$(get_config modloop_sha256)  $file.part" | sha256sum -c; then
+            rm -f "$file.part"
+            error_and_exit "modloop does not match the sha256 fetched over HTTPS: $url"
+        fi
+        mv "$file.part" "$file"
+    fi
+    ensure_service_started modloop
+}
+
 ensure_service_stopped() {
     service=$1
 
@@ -443,11 +460,31 @@ umount_all() {
     fi
 }
 
+# 杀掉根目录是 $1 的进程，等它们退出
+kill_procs_rooted_in() {
+    local pids proc
+    for _ in 1 2 3 4 5; do
+        pids=
+        for proc in /proc/[0-9]*; do
+            if [ "$(readlink $proc/root 2>/dev/null)" = "$1" ]; then
+                pids="$pids ${proc#/proc/}"
+            fi
+        done
+        if [ -z "$pids" ]; then
+            return
+        fi
+        kill -9 $pids || true
+        sleep 1
+    done
+}
+
 # 可能脚本不是首次运行，先清理之前的残留
 clear_previous() {
     disconnect_qcow
     # fetch_qcow_hash 验签后 gpg-agent 会驻留，重跑前清掉
     pkill gpg-agent || true
+    # 上次装 alpine 时在 chroot 里起的 ntpd、dhcpcd 根目录在 /os，不先杀掉，/os 就卸不掉
+    kill_procs_rooted_in /os
     swapoff -a
     umount_all
 
@@ -1711,7 +1748,7 @@ keep_now_resolv_conf() {
 # 抄 https://github.com/alpinelinux/alpine-conf/blob/3.18.1/setup-disk.in#L421
 get_alpine_firmware_pkgs() {
     # 需要有 modloop，不然 modinfo 会报错
-    ensure_service_started modloop >&2
+    start_modloop >&2
 
     # 如果不在单独的文件夹，则用 linux-firmware-other
     # 如果在单独的文件夹，则用 linux-firmware-xxx
@@ -2800,7 +2837,7 @@ trans() {
     # 先检查 modloop 是否正常
     # 防止格式化硬盘后，缺少 ext4 模块导致 mount 失败
     # https://github.com/bin456789/reinstall/issues/136
-    ensure_service_started modloop
+    start_modloop
 
     cat /proc/cmdline
     clear_previous

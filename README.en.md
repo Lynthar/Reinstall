@@ -62,6 +62,17 @@ to pin the bootstrap scripts. There's no config file and no environment
 variables — everything is a flag. DNS is hardcoded to `1.1.1.1` and `8.8.8.8`,
 with Cloudflare and Google for IPv6.
 
+Changed your mind before rebooting?
+
+```bash
+sudo bash reinstall.sh reset
+```
+
+That takes back the one-time boot entry and deletes the downloaded kernel and
+the entries written into the boot configuration; the next boot starts the
+current system as usual. If the script fails partway or you press Ctrl+C, it
+does this itself.
+
 ## Security
 
 **Be clear about what is and isn't verified.** Ubuntu cloud images get GPG
@@ -111,6 +122,11 @@ both the log and the web output.
 - **x86_64 and aarch64 only**, and 32-bit x86 is treated as x86_64.
 - **Container virtualisation such as OpenVZ and LXC isn't supported**, and Secure
   Boot has to be off.
+- **BIOS machines booting with GRUB whose `/boot` is on btrfs, ZFS, LVM, software
+  RAID or an encrypted disk aren't supported**: GRUB can't rewrite grubenv there,
+  so the one-time boot entry would stick and every reboot would start the
+  temporary system. The script refuses before touching anything. openSUSE's
+  btrfs is the exception — its GRUB is patched for exactly this.
 - **`dd` mode doesn't set passwords, configure networking or install drivers** —
   the image has to arrive with a working configuration. It also **doesn't check
   disk capacity** first.

@@ -76,6 +76,8 @@ jobs:
           next=$(sed -n 's/^BootNext: //p' <<<"$entries")
           test -n "$next"
           grep -q "^Boot$next\* reinstall (ubuntu" <<<"$entries"
+          # each run first undid the one before it
+          test "$(grep -c ' reinstall (' <<<"$entries")" = 1
           sudo grep -q '^menuentry "reinstall (ubuntu' /boot/efi/EFI/reinstall/grub.cfg
       - name: initrd carries the repository files trans.sh uses
         run: |
@@ -87,3 +89,23 @@ jobs:
           for f in logviewer.html fix-eth-name.sh fix-eth-name.initd fix-eth-name.service keys/ubuntu-cloud.asc; do
             sudo cmp "repo/$f" "$GITHUB_WORKSPACE/$f"
           done
+      - name: reset undoes the last run
+        run: |
+          sudo bash reinstall.sh reset
+          entries=$(sudo efibootmgr)
+          if grep -e '^BootNext:' -e ' reinstall (' <<<"$entries"; then exit 1; fi
+          sudo test ! -e /boot/efi/EFI/reinstall
+          test ! -e /reinstall-vmlinuz
+          test ! -e /reinstall-initrd
+      - name: a run that fails after touching the boot setup undoes itself
+        run: |
+          # no such commit: trans.sh 404s after the kernel is downloaded and the old entries are gone
+          if out=$(sudo bash reinstall.sh --password 123@@@ --commit 0000000000000000000000000000000000000000 alpine 2>&1); then
+            exit 1
+          fi
+          grep -q 'Stage 1 did not finish' <<<"$out"
+          entries=$(sudo efibootmgr)
+          if grep -e '^BootNext:' -e ' reinstall (' <<<"$entries"; then exit 1; fi
+          sudo test ! -e /boot/efi/EFI/reinstall
+          test ! -e /reinstall-vmlinuz
+          test ! -e /reinstall-initrd
