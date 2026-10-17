@@ -354,20 +354,21 @@ if ! $ipv6_has_internet; then
     flush_ipv6_config
 fi
 
-# 如果联网了，但没获取到默认 DNS，则添加我们的 DNS
+# 联网了却没拿到 DNS 时补我们的。不看本网卡是否联网：多网卡时不能上网的那块后跑完，flush 会连带删掉
+# 能上网那块补的 v4 解析器，得在这里补回来。只补整机有默认路由的那一族：纯 IPv6 时补上的 v4 解析器
+# 排在前面，而 musl、glibc 只读前三条 nameserver
+add_missing_dns() {
+    if ! is_have_ipv4_dns && ip -4 route show default | grep -q .; then
+        echo "nameserver $ipv4_dns1" >>/etc/resolv.conf
+        echo "nameserver $ipv4_dns2" >>/etc/resolv.conf
+    fi
+    if ! is_have_ipv6_dns && ip -6 route show default | grep -q .; then
+        echo "nameserver $ipv6_dns1" >>/etc/resolv.conf
+        echo "nameserver $ipv6_dns2" >>/etc/resolv.conf
+    fi
+}
 
-# 有一种情况是，多网卡，且能上网的网卡先完成了这个脚本，不能上网的网卡后完成
-# 无法上网的网卡通过 flush_ipv4_config 删除了不能上网的 IP 和 dns
-# （原计划是删除无法上网的网卡 dhcp4 获取的 dns，但实际上无法区分）
-# 因此这里直接添加 dns，不判断是否联网
-if ! is_have_ipv4_dns; then
-    echo "nameserver $ipv4_dns1" >>/etc/resolv.conf
-    echo "nameserver $ipv4_dns2" >>/etc/resolv.conf
-fi
-if ! is_have_ipv6_dns; then
-    echo "nameserver $ipv6_dns1" >>/etc/resolv.conf
-    echo "nameserver $ipv6_dns2" >>/etc/resolv.conf
-fi
+add_missing_dns
 
 # 传参给 trans.start
 netconf="/dev/netconf/$ethx"

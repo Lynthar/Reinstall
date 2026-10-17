@@ -41,6 +41,9 @@ if [ -z "$BASH" ]; then
     fi
 fi
 
+# 输出不是终端（重定向进文件、接管道）时不着色。得在下面接上日志之前看：之后标准输出总是管道
+[ -t 1 ] && color_out=true || color_out=false
+
 # 记录日志，过滤含有 password 的行。日志进程不理 Ctrl+C、kill 与断线：这些信号发给整个进程组，
 # 日志进程先死的话，脚本退出前撤销时一写输出就被 SIGPIPE 杀掉，什么也没撤
 exec > >(trap '' INT TERM HUP && exec tee >(grep -iv password >>/reinstall.log)) 2>&1
@@ -59,7 +62,7 @@ usage_and_exit() {
     cat <<EOF
 Usage: ./reinstall.sh debian   10|11|12|13
                       ubuntu   18.04|20.04|22.04|24.04|26.04 [--minimal]
-                      alpine   3.21|3.22|3.23
+                      alpine   3.22|3.23
                       dd       --img="https://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
                       reset    (before rebooting: undo what the last run changed)
 
@@ -116,7 +119,11 @@ echo_color_text() {
     color="$1"
     shift
     plain="\e[0m"
-    echo -e "$color$*$plain"
+    if $color_out; then
+        echo -e "$color$*$plain"
+    else
+        echo -e "$*"
+    fi
 }
 
 error_and_exit() {
@@ -747,7 +754,7 @@ verify_os_name() {
     for os in \
         'debian   10|11|12|13' \
         'ubuntu   18.04|20.04|22.04|24.04|26.04' \
-        'alpine   3.21|3.22|3.23' \
+        'alpine   3.22|3.23' \
         'dd'; do
         read -r ds vers <<<"$os"
         vers_=${vers//\./\\\.}
@@ -2074,6 +2081,7 @@ undo_boot_changes() {
 undo_if_failed() {
     local ret=$? undone
     if [ $ret -eq 0 ]; then
+        rm -rf "$tmp"
         return
     fi
     # 再按一次 Ctrl+C 也要撤完，撤一半比不撤更难收拾
@@ -2085,6 +2093,8 @@ undo_if_failed() {
         undo_boot_changes
     )
     undone=$?
+    # 撤完再删：失败可能发生在 mod_initrd 进了 $tmp/initrd 之后，先删就是在没了的目录里撤
+    rm -rf "$tmp"
     if [ $undone -ne 0 ]; then
         error "The undo did not finish. Run: bash $0 reset"
     fi
@@ -2529,6 +2539,8 @@ fi
 # /tmp 挂载在内存的话，可能不够空间
 tmp=/reinstall-tmp
 mkdir_clear "$tmp"
+# 里面只有这次运行的下载与中间文件，退出时删掉。动引导项之后 undo_if_failed 顶替这个陷阱，它也删
+trap 'rm -rf "$tmp"' EXIT
 
 eval set -- "$opts"
 # shellcheck disable=SC2034
@@ -2704,7 +2716,6 @@ done
 # 反悔：重启之前撤销上次运行对宿主的改动。不联网，其余参数一概不看
 if [ "$*" = reset ]; then
     undo_boot_changes
-    rm -rf "$tmp"
     info false "Reset done. The next boot starts the current system."
     exit 0
 fi
@@ -2857,6 +2868,7 @@ mod_initrd
 
 install_boot_entry
 trap - EXIT INT TERM HUP
+rm -rf "$tmp"
 
 info 'info'
 echo "$distro $releasever"
@@ -2871,13 +2883,23 @@ if [ -n "$ssh_port" ]; then
     echo "SSH Port: $ssh_port"
 fi
 
-if is_alpine_live; then
-    echo 'Reboot to start Alpine Live OS.'
-elif is_use_dd; then
+if is_use_dd; then
     show_dd_password_tips
-    echo 'Reboot to start DD.'
+fi
+if is_alpine_live; then
+    echo 'Reboot to start Alpine Live OS, then SSH into it with the login above.'
+elif [ "$hold" = 1 ]; then
+    echo 'Reboot to start the temporary Alpine system. With --hold 1 it stops there with SSH up:'
+    echo "SSH into it with the login above and run '/trans.sh' to install."
 else
-    echo "Reboot to start the installation."
+    if is_use_dd; then
+        echo 'Reboot to start DD.'
+    else
+        echo "Reboot to start the installation."
+    fi
+    echo "After the reboot, SSH into the temporary Alpine system with the login above to follow /reinstall.log."
+    echo "Until it finishes, do not reboot or power off from the provider's panel:"
+    echo "once it is writing the disk, neither the current nor the new system can boot."
 fi
 echo "Or run 'bash $0 reset' now to undo it."
 

@@ -79,6 +79,8 @@ jobs:
           # each run first undid the one before it
           test "$(grep -c ' reinstall (' <<<"$entries")" = 1
           sudo grep -q '^menuentry "reinstall (ubuntu' /boot/efi/EFI/reinstall/grub.cfg
+          # the downloads and the unpacked initrd go once the boot entry is written
+          test ! -e /reinstall-tmp
       - name: initrd carries the repository files trans.sh uses
         run: |
           mkdir /tmp/initrd
@@ -109,3 +111,10 @@ jobs:
           sudo test ! -e /boot/efi/EFI/reinstall
           test ! -e /reinstall-vmlinuz
           test ! -e /reinstall-initrd
+          test ! -e /reinstall-tmp
+      - name: a run refused before touching anything leaves nothing behind
+        run: |
+          # an unknown target is refused after the work directory is made
+          if out=$(sudo bash reinstall.sh fedora 2>&1); then exit 1; fi
+          grep -q '^Usage: ' <<<"$out"
+          test ! -e /reinstall-tmp

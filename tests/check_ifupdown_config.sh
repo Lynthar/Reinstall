@@ -2,6 +2,8 @@
 # Runs create_ifupdown_config from trans.sh on stubbed probe results: /dev/netconf as
 # initrd-network.sh leaves it, an rdisc6 answer and resolv.conf. The file it writes is
 # the only network config alpine and debian get, so a wrong stanza means no network.
+# Also runs initrd-network.sh's add_missing_dns, which fills that resolv.conf: the
+# resolvers it adds are the ones the static stanzas and debian's resolv.conf carry.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -166,6 +168,70 @@ iface eth0 inet6 manual
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet6 auto"
+done
+
+# add_missing_dns, with ip answering "is there a default route" per family from $routes.
+cat >"$work/dns_stubs.sh" <<STUBS
+ip() {
+    case "\$*" in
+    "-4 route show default") case "\$routes" in *4*) echo "default via 203.0.113.1 dev eth0" ;; esac ;;
+    "-6 route show default") case "\$routes" in *6*) echo "default via fe80::1 dev eth0" ;; esac ;;
+    esac
+}
+STUBS
+initrd=$repo/initrd-network.sh
+{
+    grep -E '^ipv[46]_dns[12]=' "$initrd"
+    for fn in is_have_ipv4_dns is_have_ipv6_dns add_missing_dns; do
+        extract_fn "$initrd" "$fn"
+    done
+} | sed "s|/etc/resolv.conf|$work/resolv.conf|g" >"$work/dns_fns.sh"
+cat >"$work/dns_case.sh" <<CASE
+set -eE
+. "$work/dns_stubs.sh"
+. "$work/dns_fns.sh"
+routes=\$1
+add_missing_dns
+CASE
+
+# dns <label> <shell> <families with a default route> <resolv.conf before> <after>
+dns() {
+    local want got
+    printf '%s\n' "$4" | sed '/^$/d' >"$work/resolv.conf"
+    want=$(sed '/^$/d' <<<"$5" | paste -sd'|' - | sed 's/|/ | /g')
+    # shellcheck disable=SC2086
+    if $2 "$work/dns_case.sh" "$3" 2>"$work/log"; then
+        got=$(paste -sd'|' - <"$work/resolv.conf" | sed 's/|/ | /g')
+    else
+        cat "$work/log" >&2
+        got="exited non-zero"
+    fi
+    check "$2 / $1" "$got" "$want"
+}
+
+for shell in "${shells[@]}"; do
+    dns "ipv6-only gets no ipv4 resolvers" "$shell" 6 "" "
+nameserver 2606:4700:4700::1111
+nameserver 2001:4860:4860::8888"
+    dns "ipv4-only gets no ipv6 resolvers" "$shell" 4 "" "
+nameserver 1.1.1.1
+nameserver 8.8.8.8"
+    dns "dual stack gets both" "$shell" 46 "" "
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+nameserver 2606:4700:4700::1111
+nameserver 2001:4860:4860::8888"
+    dns "resolvers from dhcp are kept" "$shell" 46 "
+nameserver 203.0.113.53" "
+nameserver 203.0.113.53
+nameserver 2606:4700:4700::1111
+nameserver 2001:4860:4860::8888"
+    # a second NIC without internet flushed every ipv4 line, the first NIC's route remains
+    dns "ipv4 resolvers come back after another nic flushed them" "$shell" 4 "
+nameserver 2606:4700:4700::1111" "
+nameserver 2606:4700:4700::1111
+nameserver 1.1.1.1
+nameserver 8.8.8.8"
 done
 
 finish

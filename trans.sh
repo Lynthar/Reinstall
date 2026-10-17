@@ -46,9 +46,61 @@ warn() {
 
 error_and_exit() {
     error "$@"
+    save_debug_bundle
+    # 写盘之后重启就回不来了：原系统已没了，内存里的临时系统也一起没了
+    if is_disk_written; then
+        echo "The disk has already been rewritten. Do not reboot: the current system is gone," >&2
+        echo "and this temporary system runs from memory. Fix the cause over SSH, then:" >&2
+    else
+        echo "The disk has not been touched. 'reboot' goes back to the current system, where" >&2
+        echo "'bash reinstall.sh reset' removes the leftover boot entry. Or fix the cause, then:" >&2
+    fi
     echo "Run '/trans.sh' to retry." >&2
     echo "Run '/trans.sh alpine' to install Alpine Linux instead." >&2
     exit 1
+}
+
+# 出错时打包现场给人排查。/configs 里有口令哈希与 key，不收；不装包，网络可能正是出错的原因。
+# 收集本身的失败一律忽略：它在报错路径上，不能把原来的错误盖掉
+save_debug_bundle() {
+    local dir=/tmp/reinstall-debug bundle=/tmp/reinstall-debug.tar.gz
+    rm -f $bundle
+    (
+        trap - ERR
+        set +e
+        rm -rf $dir
+        mkdir -p $dir
+        cp /reinstall.log /proc/cmdline /etc/resolv.conf $dir/
+        dmesg >$dir/dmesg
+        ip addr >$dir/ip-addr
+        { ip -4 route; ip -6 route; } >$dir/ip-route
+        show_netconf >$dir/netconf
+        cat /proc/partitions >$dir/partitions
+        blkid >$dir/blkid
+        if is_have_cmd lsblk; then
+            lsblk -f >$dir/lsblk
+        fi
+        mount >$dir/mount
+        { free -m; df -h; } >$dir/free-df
+        tar czf $bundle -C /tmp reinstall-debug
+        rm -rf $dir
+    ) >/dev/null 2>&1
+    if [ -s $bundle ]; then
+        echo "Diagnostics saved to $bundle (holds IP addresses and the install log; read it before sharing)." >&2
+    fi
+}
+
+is_disk_written() {
+    [ "$(get_config disk_written 2>/dev/null)" = 1 ]
+}
+
+# 第一次写盘之前调：说出要改写的是哪块盘，并记进 /configs，失败后手动重跑也知道盘已经动过
+begin_disk_write() {
+    local size model
+    size=$(awk '{ printf "%.1f GiB", $1 / 2097152 }' /sys/block/$xda/size)
+    model=$(sed 's/ *$//' /sys/block/$xda/device/model 2>/dev/null || true)
+    set_config disk_written 1
+    warn "Rewriting /dev/$xda ($size${model:+, $model}). The current system cannot come back after this."
 }
 
 trap_err() {
@@ -270,9 +322,14 @@ is_use_cloud_image() {
 }
 
 setup_websocketd() {
-    apk add websocketd
-    cp /repo/logviewer.html /tmp/index.html
-    apk add coreutils
+    # 日志页只是另一种看日志的方式，装不上不该让整个安装失败
+    if ! apk add websocketd coreutils; then
+        warn "Could not install websocketd, so there is no web log viewer. Follow the log over SSH: tail -f /reinstall.log"
+        return
+    fi
+    # 只服务这一个目录：开了 --web-public 时它对谁都敞开，/tmp 里有诊断包与校验和
+    mkdir -p /logviewer
+    cp /repo/logviewer.html /logviewer/index.html
 
     if [ -z "$web_port" ]; then
         web_port=80
@@ -288,9 +345,14 @@ setup_websocketd() {
         info false "Web log viewer listening on $web_addr:$web_port (use SSH port forwarding to view)"
     fi
 
+    # 重跑时先停掉上一次的。pkill 发完信号就返回，旧进程还没退出时新的绑不上端口，日志页就没了
     pkill websocketd || true
+    for _ in 1 2 3 4 5; do
+        pgrep -x websocketd >/dev/null || break
+        sleep 1
+    done
     # websocketd 遇到 \n 才推送，因此要转换 \r 为 \n
-    websocketd --address "$web_addr" --port "$web_port" --loglevel=fatal --staticdir=/tmp \
+    websocketd --address "$web_addr" --port "$web_port" --loglevel=fatal --staticdir=/logviewer \
         stdbuf -oL -eL sh -c "tail -fn+0 /reinstall.log | tr '\r' '\n' | grep -Fiv -e password -e token" &
 }
 
@@ -312,6 +374,8 @@ setup_web_if_enough_ram() {
     # 内存 < 400M 时跳过，节省 alpine live OS 内存
     if [ "$total_ram" -ge 400 ]; then
         setup_websocketd
+    else
+        info false "Web log viewer skipped: $total_ram MiB of RAM is under 400 MiB. Follow the log over SSH: tail -f /reinstall.log"
     fi
 }
 
@@ -1040,8 +1104,6 @@ newline_to_comma() {
 # 不够严谨，谨慎使用
 
 install_alpine() {
-    info "install alpine"
-
     need_ram=512
     swap_size=$(get_need_swap_size $need_ram)
     [ "$swap_size" -gt 0 ] && hack_lowram=true || hack_lowram=false
@@ -1071,6 +1133,7 @@ install_alpine() {
 
     # bios机器用 setup-disk 自动分区会有 boot 分区
     # 因此手动分区安装
+    step partition "partition the disk"
     create_part
     mount_part_basic_layout /os /os/boot/efi
 
@@ -1125,10 +1188,16 @@ install_alpine() {
     KERNELOPTS="$(get_ttys console=)"
     export KERNELOPTS
     export BOOTLOADER="grub"
+    step install "install alpine"
     setup-disk -m sys -k $kernel_flavor /os
 
     # 删除 setup-disk 时自动安装的包
     apk del e2fsprogs dosfstools efibootmgr grub*
+
+    step configure "configure the system"
+
+    # setup-disk 经 lbu 把临时系统的 /etc/resolv.conf 带了进来
+    del_search_domains /os
 
     # 如果没有挂载 /proc
 
@@ -1169,11 +1238,22 @@ install_alpine() {
     chroot /os sed -i '/^#slaac hwaddr/s/^#//' /etc/dhcpcd.conf
 
     # 安装其他部件
-    chroot /os setup-keymap us us
+    # Live OS 里重跑时它报「loadkmap failed to stop」，装好的系统不受影响，所以成功时不显示输出
+    if ! chroot /os setup-keymap us us >/tmp/setup-keymap.log 2>&1; then
+        cat /tmp/setup-keymap.log
+        error_and_exit "setup-keymap failed"
+    fi
     chroot /os setup-timezone -i "${timezone:-UTC}"
-    # 3.21 默认是 chrony
-    # 3.22 默认是 busybox ntp
-    printf '\n' | chroot /os setup-ntp || warn "setup-ntp failed; the installed system has no NTP client configured"
+    # setup-ntp 先把 ntpd 加进运行级、最后在 chroot 里启动它，启动那一步常失败而返回非零；
+    # 进了运行级就是配好了，装好的系统开机就跑
+    if ! chroot /os setup-ntp busybox >/tmp/setup-ntp.log 2>&1 &&
+        ! [ -e /os/etc/runlevels/default/ntpd ]; then
+        cat /tmp/setup-ntp.log
+        warn "setup-ntp failed; the installed system has no NTP client configured"
+    fi
+    if [ -f /os/etc/conf.d/ntpd ]; then
+        sed -i "s/-p pool\.ntp\.org/-p $(get_ntp_server)/" /os/etc/conf.d/ntpd
+    fi
 
     # 设置公钥
     if is_need_set_ssh_keys; then
@@ -1404,14 +1484,16 @@ pipe_extract() {
 }
 
 dd_raw_with_extract() {
-    info "dd raw"
-
     # 用官方 wget，一来带进度条，二来自带重试功能
     apk add wget
+    begin_disk_write
 
-    # 管道默认只看最后一段的退出码：下载中途断开时 cat 照样返回 0，半张镜像会被当成 dd 成功
+    # 管道默认只看最后一段的退出码：下载中途断开时 cat 照样返回 0，半张镜像会被当成 dd 成功。
+    # wget 的输出照常上屏，经 tee 另存一份给报错原因用；tee 在管道里同步跑完，读文件时已写完
     # shellcheck disable=SC2154
-    if ! (set -o pipefail && wget $img -O- | pipe_extract >/dev/$xda 2>/tmp/dd_stderr); then
+    if ! (set -o pipefail &&
+        { wget $img -O- 2>&1 >&3 | tee /tmp/dd_wget_stderr >&2; } 3>&1 |
+        pipe_extract >/dev/$xda 2>/tmp/dd_stderr); then
         # vhd 文件结尾有 512 字节额外信息，可以忽略
         if grep -iq 'No space' /tmp/dd_stderr; then
             apk add parted
@@ -1431,7 +1513,9 @@ dd_raw_with_extract() {
                 fi
             fi
         fi
-        error_and_exit "$(cat /tmp/dd_stderr)"
+        # 进度条用 \r 刷新，换成换行后取最后几行，就是 wget 自己说的失败原因
+        error_and_exit "Writing $img to /dev/$xda failed:
+$(cat /tmp/dd_stderr; tr '\r' '\n' </tmp/dd_wget_stderr | grep . | tail -n 3)"
     fi
 }
 
@@ -1447,8 +1531,6 @@ is_xda_gt_2t() {
 
 create_part() {
     # 除了 dd 都会用到
-    info "Create Part"
-
     # 分区工具
     apk add parted e2fsprogs
     if is_efi; then
@@ -1457,6 +1539,7 @@ create_part() {
 
     # 先清掉整块盘上的旧签名：旧的分区表、文件系统、RAID 签名留着，新分区会被认错，alpine 会装不上
     apk add wipefs
+    begin_disk_write
     wipefs -a -f /dev/$xda
     apk del wipefs
 
@@ -1743,6 +1826,15 @@ restore_resolv_conf() {
 keep_now_resolv_conf() {
     os_dir=$1
     rm -f $os_dir/etc/resolv.conf.orig
+    del_search_domains $os_dir
+}
+
+# 临时系统 resolv.conf 里的 search / domain（见过 search installer）不属于新系统，
+# 留着的话短主机名的查询都会补上它发给公共解析器
+del_search_domains() {
+    if [ -f $1/etc/resolv.conf ]; then
+        sed -Ei '/^(search|domain)([[:space:]]|$)/d' $1/etc/resolv.conf
+    fi
 }
 
 # 抄 https://github.com/alpinelinux/alpine-conf/blob/3.18.1/setup-disk.in#L421
@@ -2076,7 +2168,6 @@ change_root_password() {
 
 download_qcow() {
     apk add qemu-img
-    info "Download qcow2 image"
 
     mkdir -p /installer
     mount /dev/disk/by-label/installer /installer
@@ -2192,7 +2283,6 @@ get_debian_suites() {
 
 # 盘还没动时探好每个 suite、核好 Freexian 的 key：哪个取不到都该在这里停，而不是停在擦过的盘上
 prepare_debian_sources() {
-    info "Check Debian apt sources"
     rm -rf $apt_dir /tmp/verify
     mkdir -p $apt_dir /tmp/verify
 
@@ -2359,9 +2449,6 @@ chroot_apt_autoremove() {
 }
 
 install_qcow_by_copy() {
-    info "Install qcow2 by copy"
-
-
     modify_ubuntu() {
         os_dir=/os
         info "Modify Ubuntu"
@@ -2454,15 +2541,6 @@ EOF
 
             # 清理
             rm -rf $os_dir/net.cfg
-        fi
-
-        # 自带的 60-cloudimg-settings.conf 禁止了 PasswordAuthentication
-        file=$os_dir/etc/ssh/sshd_config.d/60-cloudimg-settings.conf
-        if [ -f $file ]; then
-            sed -i '/^PasswordAuthentication/d' $file
-            if [ -z "$(cat $file)" ]; then
-                rm -f $file
-            fi
         fi
 
         # 更改 efi 目录的 grub.cfg 写死的 fsuuid
@@ -2677,8 +2755,6 @@ get_partition_table_format() {
 }
 
 dd_qcow() {
-    info "DD qcow2"
-
     if true; then
         connect_qcow
 
@@ -2790,9 +2866,19 @@ mount_part_basic_layout() {
     fi
 }
 
+# pool.ntp.org 没有 AAAA，纯 IPv6 的机器上永远同步不上；池里只有 2.pool.ntp.org 有，
+# 可双栈机器解析它会先选 v6，而它的 v6 服务器从有的机房一半不回。所以只在没有 v4 时用它
+get_ntp_server() {
+    if ip -4 route show default | grep -q .; then
+        echo pool.ntp.org
+    else
+        echo 2.pool.ntp.org
+    fi
+}
+
 sync_time() {
     # 优先级:
-    # 1. NTP (pool.ntp.org)        — 专为时间同步设计，不依赖证书
+    # 1. NTP (get_ntp_server)      — 专为时间同步设计，不依赖证书
     # 2. HTTP Date header fallback — 当 NTP 端口被防火墙挡时用
     #
     # 旧版本默认走 HTTP + --no-check-certificate，相当于主动放弃 TLS 校验。
@@ -2800,7 +2886,7 @@ sync_time() {
 
     # NTP
     # -d  Verbose / -n Foreground / -q Quit after sync / -p PEER
-    if ntpd -d -n -q -p pool.ntp.org; then
+    if ntpd -d -n -q -p "$(get_ntp_server)"; then
         return
     fi
 
@@ -2827,6 +2913,28 @@ is_ubuntu_lts() {
 # 虚拟机上也装 generic：virtual 不带 linux-modules-extra，6.8 及更早的内核里 GCP 的 gve、Azure 的 mana 只在那里
 get_ubuntu_kernel_flavor() {
     is_ubuntu_lts && echo generic-hwe-$releasever || echo generic
+}
+
+# 各目标装机的阶段，横幅的「第几/共几」从这张表数出来：加减阶段改这里，序号与总数跟着变
+get_steps() {
+    case "$distro" in
+    alpine) echo partition install configure ;;
+    dd) echo write ;;
+    debian) echo verify sources partition download write configure ;;
+    ubuntu) echo verify partition download install ;;
+    esac
+}
+
+# step <阶段> <在做什么>：打出「[第几/共几] 在做什么」
+step() {
+    local s n=0 i=0
+    for s in $(get_steps); do
+        n=$((n + 1))
+        if [ "$s" = "$1" ]; then
+            i=$n
+        fi
+    done
+    info "[$i/$n] $2"
 }
 
 trans() {
@@ -2863,22 +2971,33 @@ trans() {
         install_alpine
         ;;
     dd)
+        step write "download and write the image"
         dd_raw_with_extract
         ;;
     debian)
+        step verify "verify the image checksums"
         fetch_qcow_hash
+        step sources "check the Debian apt sources"
         prepare_debian_sources
+        step partition "partition the disk"
         create_part
+        step download "download the image"
         download_qcow
+        step write "write the image"
         dd_qcow
         resize_after_install_cloud_image
+        step configure "configure the system"
         modify_os_on_disk
         ;;
     ubuntu)
         # 24.04 云镜像有 boot 分区（在系统分区之前），因此不直接 dd 云镜像
+        step verify "verify the image checksums"
         fetch_qcow_hash
+        step partition "partition the disk"
         create_part
+        step download "download the image"
         download_qcow
+        step install "install and configure the system"
         install_qcow_by_copy
         ;;
     esac
@@ -2933,6 +3052,13 @@ elif [ -n "$1" ]; then
     error_and_exit "unknown option $1"
 fi
 
+# 从这里起输出同时写各控制台与 /reinstall.log：开机时 local 服务把本脚本的输出丢进 /dev/null，
+# 不在这里接上，控制台上什么也看不到。放在 update 之后，否则 exec 起来的新脚本再接一层、日志写两遍；
+# 追加写，手动重跑时上一次的日志还在
+# shellcheck disable=SC2046
+exec > >(exec tee -a $(get_ttys /dev/) /reinstall.log) 2>&1
+echo "===== trans.sh${1:+ $1} started $(date -u '+%Y-%m-%d %H:%M:%S') UTC ====="
+
 # 无参数运行部分
 # 允许 ramdisk 使用所有内存，默认是 50%
 mount / -o remount,size=100%
@@ -2962,34 +3088,22 @@ else
     change_root_password /
     printf '\nyes' | setup-sshd
 fi
+info false "SSH is up on port ${ssh_port:-22}. The log is /reinstall.log."
 
 # shellcheck disable=SC2154
 if [ "$hold" = 1 ]; then
     if is_run_from_locald; then
-        info "hold"
+        info "hold 1"
+        echo "Nothing was installed. Run '/trans.sh' to install, or 'reboot' to go back to the current system."
         exit
     fi
 fi
 
-# 正式运行重装
-# shellcheck disable=SC2046,SC2194
-case 1 in
-1)
-    # ChatGPT 说这种性能最高
-    exec > >(exec tee $(get_ttys /dev/) /reinstall.log) 2>&1
-    trans
-    ;;
-2)
-    exec > >(tee $(get_ttys /dev/) /reinstall.log) 2>&1
-    trans
-    ;;
-3)
-    trans 2>&1 | tee $(get_ttys /dev/) /reinstall.log
-    ;;
-esac
+trans
 
 if [ "$hold" = 2 ]; then
     info "hold 2"
+    echo "Installed. Run 'reboot' to start the new system."
     exit
 fi
 

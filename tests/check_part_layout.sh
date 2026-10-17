@@ -19,12 +19,14 @@ done
 harness=$(mktemp -d)
 trap 'losetup -d "${dev:-}" 2>/dev/null || true; rm -rf "$harness"' EXIT
 
-# Faked inputs: the real part size asks the mirror for a Content-Length, and the
-# real update_part drives Alpine's mdev. Neither is what is under test.
+# Faked inputs: the real part size asks the mirror for a Content-Length, the real
+# update_part drives Alpine's mdev and begin_disk_write records the mark in /configs.
+# None of them is what is under test.
 cat >"$harness/create_part.sh" <<'STUBS'
 info() { echo "  create_part: $*"; }
 apk() { :; }
 get_cloud_image_part_size() { echo "$fake_part_size"; }
+begin_disk_write() { :; }
 update_part() {
     sync
     partprobe "/dev/$xda" >/dev/null 2>&1 || true

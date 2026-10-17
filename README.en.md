@@ -13,7 +13,7 @@ from there. **This erases disks** — back up first, and try it on a machine you
 can rebuild.
 
 Four targets: Debian 10/11/12/13, Ubuntu 18.04/20.04/22.04/24.04/26.04, Alpine
-3.21–3.23, and `dd` of any raw image (over `http(s)://` or a magnet link).
+3.22/3.23, and `dd` of any raw image (over `http(s)://` or a magnet link).
 Debian and Ubuntu go through official cloud images. Debian 10 and 11 are past
 official support, so the installed system uses Freexian's ELTS repository
 (`deb.freexian.com`); its signing key fingerprint is pinned in the script.
@@ -54,6 +54,15 @@ so forward a port over SSH and follow along:
 ```bash
 ssh -L 8080:127.0.0.1:80 root@your-server
 ```
+
+The log itself is `/reinstall.log` in the temporary system; SSH in with the same
+login to read it. Don't reboot or power off from the provider's panel while it
+installs: once it is writing the disk, neither the old nor the new system can
+boot. If something fails, the screen says whether the disk was touched. If it
+wasn't, `reboot` goes back to the current system; if it was, don't reboot — fix
+the cause over SSH and run `/trans.sh` again. The scene is packed into
+`/tmp/reinstall-debug.tar.gz`; it holds IP addresses and the install log, so read
+it before you share it.
 
 Other flags you'll reach for: `--timezone`, `--ssh-port`, `--web-port`,
 `--no-web`, `--hold 1|2` (stop in the installer environment, or don't reboot at

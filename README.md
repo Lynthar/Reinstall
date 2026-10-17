@@ -11,7 +11,7 @@
 再在那里面把目标系统真正装上去。**这个脚本会擦盘**——跑之前先备份，最好先在一台
 可以重建的机器上试一次。
 
-能装四种东西：Debian 10/11/12/13、Ubuntu 18.04/20.04/22.04/24.04/26.04、Alpine 3.21–3.23，
+能装四种东西：Debian 10/11/12/13、Ubuntu 18.04/20.04/22.04/24.04/26.04、Alpine 3.22/3.23，
 以及 `dd` 任意 raw 镜像（`http(s)://` 或磁力链）。Debian 与 Ubuntu 走官方云镜像。
 Debian 10 / 11 的官方支持已经结束，装好后用 Freexian 的 ELTS 源（`deb.freexian.com`），
 它的签名密钥指纹钉在脚本里。
@@ -51,6 +51,11 @@ sudo bash reinstall.sh debian 12 --ssh-key github:yourname
 ```bash
 ssh -L 8080:127.0.0.1:80 root@your-server
 ```
+
+日志本身在临时系统的 `/reinstall.log`，用同一套登录方式 SSH 进去就能看。装的过程中别从
+厂商面板重启或关机：开始写盘之后，新旧两个系统都起不来。出了错，屏幕上会说盘动没动——
+没动就 `reboot` 回原系统；动了就别重启，在 SSH 里修好原因后跑 `/trans.sh` 重来。现场打包在
+`/tmp/reinstall-debug.tar.gz`，里面有 IP 地址和安装日志，发给别人之前先看一眼。
 
 其它常用旗标：`--timezone`、`--ssh-port`、`--web-port`、`--no-web`、
 `--hold 1|2`（停在安装环境或装完不重启）、`--force-boot-mode bios|efi`、`-x` 调试、
