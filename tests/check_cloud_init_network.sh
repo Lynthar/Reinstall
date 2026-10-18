@@ -1,7 +1,7 @@
 #!/bin/bash
-# Runs trans.sh's warn_static_network and create_cloud_init_network_v2 on stubbed probes
-# (/dev/netconf, an rdisc6 answer, resolv.conf). The network-config is all a dd'd image learns
-# of this network: it must match NICs by MAC without renaming them and mark routes on-link.
+# Runs trans.sh's warn_static_network and create_cloud_init_network_v2 (also ubuntu's netplan file)
+# on stubbed probes: /dev/netconf, an rdisc6 answer, resolv.conf. That config is all the system
+# learns of this network: it must match NICs by MAC without renaming them and mark routes on-link.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -27,9 +27,10 @@ for fn in get_eths get_netconf_to get_ra_to show_netconf get_current_dns \
     is_dhcpv4 is_staticv4 is_staticv6 is_dhcpv6_or_slaac is_ipv4_has_internet is_ipv6_has_internet \
     should_disable_dhcpv4 should_disable_accept_ra should_disable_autoconf is_slaac is_dhcpv6 \
     is_have_ipv6 is_enable_other_flag is_have_rdnss is_need_manual_set_dnsv6 \
-    create_cloud_init_network_v2 warn_static_network; do
+    create_cloud_init_network_v2 create_netplan_config warn_static_network; do
     extract_fn "$trans" "$fn"
-done | sed -e "s|/dev/netconf|$work/netconf|g" -e "s|/etc/resolv.conf|$work/resolv.conf|g" >"$work/fns.sh"
+done | sed -e "s|/dev/netconf|$work/netconf|g" -e "s|/etc/resolv.conf|$work/resolv.conf|g" \
+    -e "s|/tmp/network-config|$work/tmp-network-config|g" >"$work/fns.sh"
 
 cat >"$work/case.sh" <<CASE
 set -eE
@@ -37,6 +38,7 @@ set -eE
 . "$work/fns.sh"
 case "\$1" in
 config) create_cloud_init_network_v2 "$work/network-config" ;;
+netplan) create_netplan_config "$work/50-cloud-init.yaml" ;;
 warn) cloud_init_network=\$2 warn_static_network ;;
 esac
 CASE
@@ -149,6 +151,7 @@ ethernets:
 
     netconf eth0 52:54:00:12:34:56 dhcpv4=1 dhcpv6_or_slaac=1 ipv4_has_internet=1 ipv6_has_internet=1
     ra Yes No No 2606:4700:4700::1111
+    # cloud-init writes every dynamic IPv6 type as dhcp6 when it turns v1 into netplan
     expect "dhcp4 + slaac with rdnss" "$shell" '
 version: 2
 ethernets:
@@ -156,7 +159,7 @@ ethernets:
     match:
       macaddress: "52:54:00:12:34:56"
     dhcp4: true
-    accept-ra: true'
+    dhcp6: true'
     check "$shell / dhcp4 + slaac: no warning" "$(warned "$shell" "")" ""
 
     ra No Yes No
@@ -214,6 +217,15 @@ ethernets:
       macaddress: "52:54:00:00:00:02"
     dhcp4: true'
     check "$shell / no set-name anywhere" "$(grep -c set-name "$work/network-config" || true)" 0
+
+    # ubuntu's netplan file: the same config one level down under network:, readable by root only
+    rm -f "$work/50-cloud-init.yaml"
+    # shellcheck disable=SC2086
+    $shell "$work/case.sh" netplan >/dev/null 2>"$work/log" || cat "$work/log" >&2
+    check "$shell / netplan file nests the config under network:" \
+        "$(sed 1d "$work/50-cloud-init.yaml" | sed 's/^  //')" "$(cat "$work/network-config")"
+    check "$shell / netplan file: first line" "$(head -1 "$work/50-cloud-init.yaml")" "network:"
+    check "$shell / netplan file: mode" "$(stat -c %a "$work/50-cloud-init.yaml")" 600
 done
 
 finish

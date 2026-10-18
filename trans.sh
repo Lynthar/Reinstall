@@ -1689,140 +1689,8 @@ mount_pseudo_fs() {
     fi
 }
 
-create_cloud_init_network_config() {
-    ci_file=$1
-    recognize_static6=${2:-true}
-    recognize_ipv6_types=${3:-true}
-
-    info "Create Cloud-init network config"
-
-    # 防止文件未创建
-    mkdir -p "$(dirname "$ci_file")"
-    touch "$ci_file"
-
-    apk add yq-go
-
-    need_set_dns4=false
-    need_set_dns6=false
-
-    config_id=0
-    for ethx in $(get_eths); do
-        get_netconf_to mac_addr
-
-        # shellcheck disable=SC2154
-        yq -i ".network.version=1 |
-           .network.config[$config_id].type=\"physical\" |
-           .network.config[$config_id].name=\"$ethx\" |
-           .network.config[$config_id].mac_address=(\"$mac_addr\" | . style=\"single\")
-           " $ci_file
-
-        subnet_id=0
-
-        # ipv4
-        if is_dhcpv4; then
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {\"type\": \"dhcp4\"}" $ci_file
-            subnet_id=$((subnet_id + 1))
-        elif is_staticv4; then
-            need_set_dns4=true
-            get_netconf_to ipv4_addr
-            get_netconf_to ipv4_gateway
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {
-                    \"type\": \"static\",
-                    \"address\": \"$ipv4_addr\",
-                    \"gateway\": \"$ipv4_gateway\" }
-                    " $ci_file
-
-            # 旧版 cloud-init 有 bug
-            # 有的版本会只从第一种配置中读取 dns，有的从第二种读取
-            # 因此写两种配置
-            # https://github.com/canonical/cloud-init/commit/1b8030e0c7fd6fbff7e38ad1e3e6266ae50c83a5
-            for cur in $(get_current_dns 4); do
-                yq -i ".network.config[$config_id].subnets[$subnet_id].dns_nameservers += [\"$cur\"]" $ci_file
-            done
-            subnet_id=$((subnet_id + 1))
-        fi
-
-        # ipv6
-        # slaac:  ipv6_slaac
-        # └─enable_other_flag: ipv6_dhcpv6-stateless
-        # dhcpv6: ipv6_dhcpv6-stateful
-
-        # ipv6
-        if is_slaac; then
-            if $recognize_ipv6_types; then
-                if is_enable_other_flag; then
-                    type=ipv6_dhcpv6-stateless
-                else
-                    type=ipv6_slaac
-                fi
-            else
-                type=dhcp6
-            fi
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {\"type\": \"$type\"}" $ci_file
-
-        elif is_dhcpv6; then
-            if $recognize_ipv6_types; then
-                type=ipv6_dhcpv6-stateful
-            else
-                type=dhcp6
-            fi
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {\"type\": \"$type\"}" $ci_file
-
-        elif is_staticv6; then
-            get_netconf_to ipv6_addr
-            get_netconf_to ipv6_gateway
-            if $recognize_static6; then
-                type_ipv6_static=static6
-            else
-                type_ipv6_static=static
-            fi
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {
-                    \"type\": \"$type_ipv6_static\",
-                    \"address\": \"$ipv6_addr\",
-                    \"gateway\": \"$ipv6_gateway\" }
-                    " $ci_file
-        fi
-        # 无法设置 autoconf = false ?
-        if should_disable_accept_ra; then
-            yq -i ".network.config[$config_id].accept-ra = false" $ci_file
-        fi
-
-        # 有 ipv6 但需设置 dns 的情况
-        if is_need_manual_set_dnsv6; then
-            need_set_dns6=true
-            for cur in $(get_current_dns 6); do
-                yq -i ".network.config[$config_id].subnets[$subnet_id].dns_nameservers += [\"$cur\"]" $ci_file
-            done
-        fi
-
-        config_id=$((config_id + 1))
-    done
-
-    if $need_set_dns4 || $need_set_dns6; then
-        yq -i ".network.config[$config_id].type=\"nameserver\"" $ci_file
-        if $need_set_dns4; then
-            for cur in $(get_current_dns 4); do
-                yq -i ".network.config[$config_id].address += [\"$cur\"]" $ci_file
-            done
-        fi
-        if $need_set_dns6; then
-            for cur in $(get_current_dns 6); do
-                yq -i ".network.config[$config_id].address += [\"$cur\"]" $ci_file
-            done
-        fi
-        # 如果 network.config[$config_id] 没有 address，则删除，避免低版本 cloud-init 报错
-        yq -i "del(.network.config[$config_id] | select(has(\"address\") | not))" $ci_file
-    fi
-
-    apk del yq-go
-
-    # 查看文件
-    info "Cloud-init network config"
-    cat -n $ci_file >&2
-}
-
-# cloud-init 的 v2 网络配置：按 MAC 匹配、不写 set-name，网卡保留镜像自己起的名字。默认路由一律
-# on-link：网关可以不在地址的网段里（见过 /48 的地址配网段外的 v6 网关），在网段里加了也无害。
+# cloud-init 的 v2 网络配置，也就是 netplan 的格式：按 MAC 匹配、不写 set-name，网卡保留系统起的名字；
+# 默认路由一律 on-link（见过 /48 配网段外的 v6 网关）；SLAAC 也写 dhcp6，同 cloud-init 把 v1 转 netplan。
 # 探测会往 stdout 打字（rdisc6 的结果等），所以先探完再成段写进 $1
 create_cloud_init_network_v2() {
     local file=$1 ethx v4 v6 accept_ra dns cur ns
@@ -1839,9 +1707,7 @@ create_cloud_init_network_v2() {
             get_netconf_to ipv4_gateway
             dns=$(get_current_dns 4)
         fi
-        if is_slaac; then
-            v6=slaac
-        elif is_dhcpv6; then
+        if is_slaac || is_dhcpv6; then
             v6=dhcp
         elif is_staticv6; then
             v6=static
@@ -1850,8 +1716,6 @@ create_cloud_init_network_v2() {
         fi
         if should_disable_accept_ra; then
             accept_ra=false
-        elif [ "$v6" = slaac ]; then
-            accept_ra=true
         fi
         if is_need_manual_set_dnsv6; then
             dns="$dns $(get_current_dns 6)"
@@ -1901,6 +1765,16 @@ create_cloud_init_network_v2() {
             fi
         } >>"$file"
     done
+}
+
+# netplan 的配置就是 v2 网络配置外面套一层 network:；文件里有地址与路由，netplan 见别人可读会告警
+create_netplan_config() {
+    create_cloud_init_network_v2 /tmp/network-config
+    {
+        echo 'network:'
+        sed 's/^/  /' /tmp/network-config
+    } >"$1"
+    chmod 600 "$1"
 }
 
 # 实测没用，生成的 machine-id 是固定的
@@ -2127,14 +2001,6 @@ modify_linux() {
     fi
 
     basic_init $os_dir
-
-    # 应该在这里是否运行了 basic_init 和创建了网络配置文件
-    # 如果没有，则使用 cloud-init
-
-    # 查看 cloud-init 最终配置
-    if [ -f "$ci_file" ]; then
-        cat -n "$ci_file"
-    fi
 
     # 删除 swap
     swapoff -a
@@ -2640,30 +2506,7 @@ EOF
         # 网络配置：18.04 起都是 netplan
         # 避免 minimal 镜像的 netplan.io 被 autoremove
         chroot $os_dir apt-mark manual netplan.io
-
-        # 生成 cloud-init 网络配置
-        create_cloud_init_network_config $os_dir/net.cfg
-
-        # ubuntu 18.04 cloud-init 版本 23.1.2，因此不用处理 onlink
-
-        # 如果不是输出到 / 则不会生成 50-cloud-init.yaml
-        # 注意比较多了什么东西
-        if false; then
-            chroot $os_dir cloud-init devel net-convert \
-                -p /net.cfg -k yaml -d /out -D ubuntu -O netplan
-            sed -Ei "/^[[:space:]]+set-name:/d" $os_dir/out/etc/netplan/50-cloud-init.yaml
-            cp $os_dir/out/etc/netplan/50-cloud-init.yaml $os_dir/etc/netplan/
-
-            # 清理
-            rm -rf $os_dir/net.cfg $os_dir/out
-        else
-            chroot $os_dir cloud-init devel net-convert \
-                -p /net.cfg -k yaml -d / -D ubuntu -O netplan
-            sed -Ei "/^[[:space:]]+set-name:/d" $os_dir/etc/netplan/50-cloud-init.yaml
-
-            # 清理
-            rm -rf $os_dir/net.cfg
-        fi
+        create_netplan_config $os_dir/etc/netplan/50-cloud-init.yaml
 
         # 更改 efi 目录的 grub.cfg 写死的 fsuuid
         # 因为 24.04 fsuuid 对应 boot 分区
