@@ -32,6 +32,8 @@ jobs:
           shellcheck tests/check_undefined_calls.sh
           shellcheck tests/check_cmdline_contract.sh
           shellcheck tests/check_ifupdown_config.sh
+          shellcheck tests/check_cloud_init_network.sh
+          shellcheck tests/check_cloud_init_seed.sh
           shellcheck tests/check_part_layout.sh
           shellcheck tests/check_qcow_verify.sh
           shellcheck tests/check_debian_sources.sh

@@ -10,7 +10,7 @@ set -eE
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=1BBD640D-E5C3-4147-80E9-E747F8E7512A
+SCRIPT_VERSION=BA32C2BF-50EA-4056-86CF-065CA965B27A
 
 TRUE=0
 FALSE=1
@@ -1453,6 +1453,112 @@ $(cat /tmp/dd_stderr; tr '\r' '\n' </tmp/dd_wget_stderr | grep . | tail -n 3)"
     fi
 }
 
+# dd 照原样写镜像：这台机器静态配置的那一族，镜像得自己配上，否则重启后起不来（全静态就失联）
+warn_static_network() {
+    local ethx list='' hint
+    for ethx in $(get_eths); do
+        if is_staticv4; then
+            get_netconf_to ipv4_addr
+            get_netconf_to ipv4_gateway
+            list="$list
+  $ethx IPv4 $ipv4_addr via $ipv4_gateway"
+        fi
+        if is_staticv6; then
+            get_netconf_to ipv6_addr
+            get_netconf_to ipv6_gateway
+            list="$list
+  $ethx IPv6 $ipv6_addr via $ipv6_gateway"
+        fi
+    done
+    if [ -z "$list" ]; then
+        return
+    fi
+    # shellcheck disable=SC2154
+    if [ "$cloud_init_network" = 1 ]; then
+        hint="--cloud-init-network is on: after the write they go into the image's cloud-init seed."
+    else
+        hint="For an image with cloud-init, --cloud-init-network writes them into its seed after the write."
+    fi
+    warn "This machine's network is configured statically:$list
+dd writes the image as it is, so the image must set these up itself or they stay down after the reboot.
+$hint"
+}
+
+# 镜像的根：挂载点本身，或其下一层（btrfs 的根可以在子卷里，如 Fedora 的 root、Ubuntu 的 @）
+find_cloud_init_root() {
+    local dir
+    for dir in "$1" "$1"/*; do
+        if [ -d "$dir/etc/cloud" ] && is_have_cmd_on_disk "$dir" cloud-init; then
+            echo "$dir"
+            return
+        fi
+    done
+    return 1
+}
+
+# 只写网络：user-data 是空映射（只有表头时 cloud-init 报 empty cloud config、状态成 degraded），
+# meta-data 只给 instance-id（每次不同，开过机的镜像也当新实例重套网络）。ds-identify 见到这两个
+# 文件才认 NoCloud；cidata 盘上的后读，带 network-config 就整份顶掉这里的
+write_cloud_init_seed() {
+    local part fstype root='' unsupported='' seed dir cidata
+    update_part
+    mkdir -p /os
+    for part in $(lsblk -lnpo NAME /dev/$xda); do
+        fstype=$(lsblk -dno FSTYPE "$part")
+        case "$fstype" in
+        ext4 | xfs | btrfs) ;;
+        LVM2_member | crypto_LUKS)
+            unsupported="$unsupported $part ($fstype)"
+            continue
+            ;;
+        *) continue ;;
+        esac
+        if ! mount -o ro -t "$fstype" "$part" /os; then
+            error_and_exit "Could not mount $part ($fstype) to look for cloud-init in the image."
+        fi
+        if root=$(find_cloud_init_root /os); then
+            break
+        fi
+        umount /os
+    done
+
+    if [ -z "$root" ]; then
+        if [ -n "$unsupported" ]; then
+            warn "The image keeps partitions on LVM or LUKS, which are not looked into:$unsupported. No cloud-init seed written."
+        else
+            warn "No cloud-init found on the image's ext4, xfs or btrfs partitions. No cloud-init seed written."
+        fi
+        return
+    fi
+
+    for dir in nocloud nocloud-net; do
+        if [ -f "$root/var/lib/cloud/seed/$dir/meta-data" ]; then
+            warn "The image already carries a NoCloud seed (/var/lib/cloud/seed/$dir); left as it is."
+            umount /os
+            return
+        fi
+    done
+    if [ -f "$root/etc/cloud/cloud-init.disabled" ]; then
+        warn "cloud-init is disabled in the image (/etc/cloud/cloud-init.disabled). No cloud-init seed written."
+    elif [ -f "$root/etc/fstab" ] &&
+        awk '$1 !~ /^#/ && ($2 == "/var" || $2 == "/var/lib" || $2 == "/var/lib/cloud")' "$root/etc/fstab" | grep -q .; then
+        warn "The image mounts /var separately, which is not followed. No cloud-init seed written."
+    else
+        mount -o remount,rw /os
+        seed=$root/var/lib/cloud/seed/nocloud
+        mkdir -p "$seed"
+        echo "instance-id: reinstall-$(date +%s)" >"$seed/meta-data"
+        printf '#cloud-config\n{}\n' >"$seed/user-data"
+        create_cloud_init_network_v2 "$seed/network-config"
+        info "Cloud-init seed network-config"
+        cat -n "$seed/network-config" >&2
+        if cidata=$(lsblk -lnpo NAME,LABEL | awk 'tolower($2) == "cidata" {print $1; exit}' | grep .); then
+            warn "A seed disk labelled cidata is attached ($cidata). cloud-init in the image reads it as well, and its network config, if it has one, replaces the one written here."
+        fi
+    fi
+    umount /os
+}
+
 get_disk_size() {
     blockdev --getsize64 "$1"
 }
@@ -1713,6 +1819,88 @@ create_cloud_init_network_config() {
     # 查看文件
     info "Cloud-init network config"
     cat -n $ci_file >&2
+}
+
+# cloud-init 的 v2 网络配置：按 MAC 匹配、不写 set-name，网卡保留镜像自己起的名字。默认路由一律
+# on-link：网关可以不在地址的网段里（见过 /48 的地址配网段外的 v6 网关），在网段里加了也无害。
+# 探测会往 stdout 打字（rdisc6 的结果等），所以先探完再成段写进 $1
+create_cloud_init_network_v2() {
+    local file=$1 ethx v4 v6 accept_ra dns cur ns
+    echo 'version: 2' >"$file"
+    echo 'ethernets:' >>"$file"
+    for ethx in $(get_eths); do
+        get_netconf_to mac_addr
+        v4='' v6='' accept_ra='' dns=''
+        if is_dhcpv4; then
+            v4=dhcp
+        elif is_staticv4; then
+            v4=static
+            get_netconf_to ipv4_addr
+            get_netconf_to ipv4_gateway
+            dns=$(get_current_dns 4)
+        fi
+        if is_slaac; then
+            v6=slaac
+        elif is_dhcpv6; then
+            v6=dhcp
+        elif is_staticv6; then
+            v6=static
+            get_netconf_to ipv6_addr
+            get_netconf_to ipv6_gateway
+        fi
+        if should_disable_accept_ra; then
+            accept_ra=false
+        elif [ "$v6" = slaac ]; then
+            accept_ra=true
+        fi
+        if is_need_manual_set_dnsv6; then
+            dns="$dns $(get_current_dns 6)"
+        fi
+
+        {
+            echo "  $ethx:"
+            echo "    match:"
+            echo "      macaddress: \"$mac_addr\""
+            if [ "$v4" = dhcp ]; then
+                echo "    dhcp4: true"
+            fi
+            if [ "$v6" = dhcp ]; then
+                echo "    dhcp6: true"
+            fi
+            if [ -n "$accept_ra" ]; then
+                echo "    accept-ra: $accept_ra"
+            fi
+            if [ "$v4" = static ] || [ "$v6" = static ]; then
+                echo "    addresses:"
+                if [ "$v4" = static ]; then
+                    echo "      - \"$ipv4_addr\""
+                fi
+                if [ "$v6" = static ]; then
+                    echo "      - \"$ipv6_addr\""
+                fi
+                echo "    routes:"
+                if [ "$v4" = static ]; then
+                    echo "      - to: \"0.0.0.0/0\""
+                    echo "        via: \"$ipv4_gateway\""
+                    echo "        on-link: true"
+                fi
+                if [ "$v6" = static ]; then
+                    echo "      - to: \"::/0\""
+                    echo "        via: \"$ipv6_gateway\""
+                    echo "        on-link: true"
+                fi
+            fi
+            ns=''
+            for cur in $dns; do
+                ns="$ns
+        - \"$cur\""
+            done
+            if [ -n "$ns" ]; then
+                echo "    nameservers:"
+                echo "      addresses:$ns"
+            fi
+        } >>"$file"
+    done
 }
 
 # 实测没用，生成的 machine-id 是固定的
@@ -2853,7 +3041,13 @@ get_ubuntu_kernel_flavor() {
 get_steps() {
     case "$distro" in
     alpine) echo partition install configure ;;
-    dd) echo write ;;
+    dd)
+        if [ "$cloud_init_network" = 1 ]; then
+            echo write network
+        else
+            echo write
+        fi
+        ;;
     debian) echo verify sources partition download write configure ;;
     ubuntu) echo verify partition download install ;;
     esac
@@ -2905,8 +3099,13 @@ trans() {
         install_alpine
         ;;
     dd)
+        warn_static_network
         step write "download and write the image"
         dd_raw_with_extract
+        if [ "$cloud_init_network" = 1 ]; then
+            step network "write the network config into the image's cloud-init seed"
+            write_cloud_init_seed
+        fi
         ;;
     debian)
         step verify "verify the image checksums"

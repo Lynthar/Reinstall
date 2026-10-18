@@ -71,6 +71,28 @@ to pin the bootstrap scripts. There's no config file and no environment
 variables — everything is a flag. DNS is hardcoded to `1.1.1.1` and `8.8.8.8`,
 with Cloudflare and Google for IPv6.
 
+Take care with `dd` on a machine with a static IP (no DHCP): the image goes on as
+it is, so it has to carry this machine's addresses itself, or that address family
+stays down after the reboot — and with everything static, the machine is
+unreachable. Before the write, the temporary system lists the statically
+configured addresses on screen and in the log. If the image has cloud-init
+(general-purpose distribution cloud images usually do), add
+`--cloud-init-network`: after the write, the detected network config goes into the
+image's `/var/lib/cloud/seed/nocloud` as a NoCloud seed, matching NICs by MAC
+without renaming them. Nothing else in the image is touched.
+
+- The image's root has to be on ext4, xfs or btrfs. With the root on LVM or LUKS,
+  or with cloud-init missing or disabled in the image, a seed already there or a
+  separate `/var` mount, it says so and writes nothing.
+- Once there is a seed, the image's cloud-init runs its own first-boot defaults
+  (growing the partition, SSH host keys, the default user and so on).
+- If the provider attaches a cidata seed disk, cloud-init reads that too, and its
+  network config replaces the one written here.
+- The seed is written the way netplan reads it, and Debian and Ubuntu cloud
+  images take it as is. On images without netplan, cloud-init converts it itself,
+  and when the gateway is outside the address's subnet the default route may not
+  come up.
+
 Changed your mind before rebooting?
 
 ```bash
@@ -137,7 +159,8 @@ both the log and the web output.
   temporary system. The script refuses before touching anything. openSUSE's
   btrfs is the exception — its GRUB is patched for exactly this.
 - **`dd` mode doesn't set passwords, configure networking or install drivers** —
-  the image has to arrive with a working configuration. Before the write it
+  the image has to arrive with a working configuration. The one exception is the
+  network seed written when you pass `--cloud-init-network`. Before the write it
   checks that the last partition in the image's partition table ends inside the
   target disk, and stops if it doesn't. An image whose partition table it cannot read is not
   checked.

@@ -11,7 +11,7 @@ confhome=https://raw.githubusercontent.com/Lynthar/Reinstall/main
 insecure_opt=
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=1BBD640D-E5C3-4147-80E9-E747F8E7512A
+SCRIPT_VERSION=BA32C2BF-50EA-4056-86CF-065CA965B27A
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -72,6 +72,8 @@ Usage: ./reinstall.sh debian   10|11|12|13
                       [--web-port PORT]          (default: 80)
                       [--web-public]             (bind web log viewer to 0.0.0.0; default: 127.0.0.1)
                       [--no-web]                 (disable web log viewer entirely)
+                      [--cloud-init-network]     (dd only: write this machine's network config into
+                                                  the image's cloud-init as a NoCloud seed)
                       [--timezone TZ]            (default: UTC)
                       [--detect-timezone]        (auto-detect via ipapi.co, leaks IP)
                       [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
@@ -866,6 +868,9 @@ verify_os_name() {
 }
 
 verify_os_args() {
+    if [ -n "$cloud_init_network" ] && [ "$distro" != dd ]; then
+        error_and_exit "--cloud-init-network only works with dd."
+    fi
     case "$distro" in
     dd)
         [ -n "$img" ] || error_and_exit "dd need --img"
@@ -2226,7 +2231,7 @@ build_extra_cmdline() {
     # https://answers.launchpad.net/ubuntu/+question/249456
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
     for key in confhome hold force_boot_mode cloud_image main_disk \
-        ssh_port web_port web_public no_web timezone; do
+        ssh_port web_port web_public no_web timezone cloud_init_network; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -2616,7 +2621,7 @@ fi
 
 long_opts=
 for o in ci debug minimal help detect-timezone password-stdin web-public no-web \
-    allow-insecure-bootstrap \
+    allow-insecure-bootstrap cloud-init-network \
     hold: sleep: \
     img: \
     passwd: password: \
@@ -2800,6 +2805,10 @@ EOF
     --img)
         img=$2
         shift 2
+        ;;
+    --cloud-init-network)
+        cloud_init_network=1
+        shift
         ;;
     --)
         shift

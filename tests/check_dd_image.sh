@@ -1,11 +1,7 @@
 #!/bin/bash
-# Runs stage 1's checks on a dd image from reinstall.sh before anything is written:
-# --img must be an http(s) URL, the only kind stage 2's wget downloads; and the last
-# partition in the image's first sectors must end inside the target disk, which is
-# also what stage 2 accepts when the write runs past the end of the disk. The images
-# are made by parted, whose own listing gives the expected end; parted cannot make a
-# 4 KiB-sector GPT on a file, so that one is put together by hand. Runs with the
-# host's od and awk, then busybox's (an Alpine host's) when installed.
+# Runs stage 1's dd checks from reinstall.sh: --img takes only http(s), what stage 2's wget
+# fetches; --cloud-init-network goes with dd alone; and the image's last partition must end
+# inside the disk, the rule stage 2 also applies when the write runs past the disk's end.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -40,6 +36,7 @@ set -eE
 tmp=$work/tmp
 case "\$1" in
 args) distro=dd img=\$2 verify_os_args ;;
+switch) distro=\$2 img=https://example.com/a.raw cloud_init_network=1 verify_os_args ;;
 ends) get_img_parts_end "\$tmp/img-test" ;;
 fits) disk_size=\$2 check_img_fits_disk ;;
 esac
@@ -162,5 +159,9 @@ for url in file:///root/a.raw 'magnet:?xt=urn:btih:00000000000000000000000000000
     check "--img $url" "$(status run host args "$url")" fail
     check "--img $url: reason" "$(said "$work/reason" '--img takes an http:// or https:// URL')" yes
 done
+
+check "--cloud-init-network with dd" "$(status run host switch dd)" pass
+check "--cloud-init-network with alpine" "$(status run host switch alpine)" fail
+check "--cloud-init-network with alpine: reason" "$(said "$work/reason" '--cloud-init-network only works with dd')" yes
 
 finish
