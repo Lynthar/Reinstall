@@ -13,7 +13,7 @@ from there. **This erases disks** — back up first, and try it on a machine you
 can rebuild.
 
 Four targets: Debian 10/11/12/13, Ubuntu 18.04/20.04/22.04/24.04/26.04, Alpine
-3.22/3.23, and `dd` of any raw image (over `http(s)://` or a magnet link).
+3.22/3.23, and `dd` of any raw image (over `http(s)://` only).
 Debian and Ubuntu go through official cloud images. Debian 10 and 11 are past
 official support, so the installed system uses Freexian's ELTS repository
 (`deb.freexian.com`); its signing key fingerprint is pinned in the script.
@@ -137,8 +137,10 @@ both the log and the web output.
   temporary system. The script refuses before touching anything. openSUSE's
   btrfs is the exception — its GRUB is patched for exactly this.
 - **`dd` mode doesn't set passwords, configure networking or install drivers** —
-  the image has to arrive with a working configuration. It also **doesn't check
-  disk capacity** first.
+  the image has to arrive with a working configuration. Before the write it
+  checks that the last partition in the image's partition table ends inside the
+  target disk, and stops if it doesn't. An image whose partition table it cannot read is not
+  checked.
 - **Network has to be auto-detectable** (IPv4 or IPv6 will do); if it can't work
   out an address, it exits. An IPv6-only host needs `--commit <SHA>`: resolving the
   branch to a commit goes through `api.github.com`, which has no IPv6 address.

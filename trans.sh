@@ -142,7 +142,7 @@ apk() {
 show_url_in_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
-        [Hh][Tt][Tt][Pp][Ss]://* | [Hh][Tt][Tt][Pp]://* | [Mm][Aa][Gg][Nn][Ee][Tt]:*) echo "$1" ;;
+        [Hh][Tt][Tt][Pp][Ss]://* | [Hh][Tt][Tt][Pp]://*) echo "$1" ;;
         esac
         shift
     done
@@ -212,14 +212,6 @@ retry() {
     done
 }
 
-get_url_type() {
-    if [[ "$1" = magnet:* ]]; then
-        echo bt
-    else
-        echo http
-    fi
-}
-
 download() {
     url=$1
     path=$2
@@ -246,25 +238,13 @@ download() {
     # --user-agent=Wget/1.21.1 \
     # --retry-wait 5
 
-    # 检测大小时已经下载了种子
-    if [ "$(get_url_type "$url")" = bt ]; then
-        torrent="$(get_torrent_path_by_magnet $url)"
-        if ! [ -f "$torrent" ]; then
-            download_torrent_by_magnet "$url" "$torrent"
-        fi
-        url=$torrent
-    fi
-
     # intel 禁止了 aria2 下载驱动
     # intel 禁止了 wget 下载网页内容
     # 腾讯云 virtio 驱动也禁止了 aria2 下载
 
-    # -o 设置 http 下载文件名
-    # -O 设置 bt 首个文件的文件名
     aria2c "$url" \
         -d "$(dirname "$path")" \
         -o "$(basename "$path")" \
-        -O "1=$(basename "$path")" \
         -U curl/7.54.1
 
     # opensuse 官方镜像支持 metalink
@@ -1097,10 +1077,6 @@ EOF
     done
 }
 
-newline_to_comma() {
-    tr '\n' ','
-}
-
 # 不够严谨，谨慎使用
 
 install_alpine() {
@@ -1396,12 +1372,6 @@ get_http_file_size() {
         tail -1 | awk '{print $2}' | grep .
 }
 
-get_url_hash() {
-    url=$1
-
-    echo "$url" | md5sum | awk '{print $1}'
-}
-
 aria2c() {
     if ! is_have_cmd aria2c; then
         apk add aria2
@@ -1415,51 +1385,12 @@ aria2c() {
     # 显示 url
     show_url_in_args "$@" >&2
 
-    # 下载 tracker
-    # 在 sub shell 里面无法保存变量，因此写入到文件
-    if echo "$@" | grep -Eq 'magnet:|\.torrent' && ! [ -f "/tmp/trackers" ]; then
-        # 独自一行下载，不然下载失败不会报错
-        # 里面有空行
-        # txt=$(wget -O- https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt | grep .)
-        # txt=$(wget -O- https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt | grep .)
-        txt=$(wget -O- https://cf.trackerslist.com/best.txt | grep .)
-        # sed 删除最后一个逗号
-        echo "$txt" | newline_to_comma | sed 's/,$//' >/tmp/trackers
-    fi
-
-    # --dht-entry-point=router.bittorrent.com:6881 \
-    # --dht-entry-point=dht.transmissionbt.com:6881 \
-    # --dht-entry-point=router.utorrent.com:6881 \
     retry 5 5 stdbuf -oL -eL aria2c \
         -x4 \
-        --seed-time=0 \
         --allow-overwrite=true \
         --summary-interval=0 \
         --max-tries 1 \
-        --bt-tracker="$([ -f "/tmp/trackers" ] && cat /tmp/trackers)" \
         "$@"
-}
-
-download_torrent_by_magnet() {
-    url=$1
-    dst=$2
-
-    url_hash=$(get_url_hash "$url")
-
-    mkdir -p /tmp/bt/$url_hash
-
-    # 不支持 -o bt.torrent 指定文件名
-    aria2c "$url" \
-        --bt-metadata-only=true \
-        --bt-save-metadata=true \
-        -d /tmp/bt/$url_hash
-
-    mv /tmp/bt/$url_hash/*.torrent "$dst"
-    rm -rf /tmp/bt/$url_hash
-}
-
-get_torrent_path_by_magnet() {
-    echo "/tmp/bt/$(get_url_hash "$1").torrent"
 }
 
 pipe_extract() {
@@ -1469,14 +1400,17 @@ pipe_extract() {
         apk add $img_type_warp
         "$img_type_warp" -dc
         ;;
+    # 经 cat 出去：GNU tar 的 stdout 可 seek 时（块设备）解稀疏成员会跳过空洞不写零，
+    # 盘上留下旧数据（Debian 的 tar.xz 镜像就是稀疏的）。调用方须开 pipefail，否则 tar
+    # 失败被 cat 的 0 盖掉
     tar)
         apk add tar
-        tar x -O
+        tar x -O | cat
         ;;
     tar.*)
         type=$(echo "$img_type_warp" | cut -d. -f2)
         apk add tar "$type"
-        tar x "--$type" -O
+        tar x "--$type" -O | cat
         ;;
     '') cat ;;
     *) error_and_exit "Not supported img_type_warp: $img_type_warp" ;;

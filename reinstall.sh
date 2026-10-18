@@ -438,6 +438,97 @@ file_enhanced() {
     echo "$full_type" | sed 's/\.$//'
 }
 
+# 输出「gpt|mbr 末尾字节」：$1（解压后的镜像开头）里最靠后的分区末尾。前 64 KiB 里读不出分区
+# 输出 none，MBR 标了 GPT（0xEE）却找不到 GPT 头输出 broken。MBR 的扇区按 512 字节算
+get_img_parts_end() {
+    od -An -tu1 -v -N 65536 "$1" | awk '
+        function le(off, len,    v, i) {
+            for (i = len - 1; i >= 0; i--)
+                v = v * 256 + b[off + i]
+            return v
+        }
+        function is_gpt_header(off) {
+            return b[off] == 69 && b[off + 1] == 70 && b[off + 2] == 73 && b[off + 3] == 32 &&
+                b[off + 4] == 80 && b[off + 5] == 65 && b[off + 6] == 82 && b[off + 7] == 84
+        }
+        { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
+        END {
+            if (n < 512 || b[510] != 85 || b[511] != 170) {
+                print "none"
+                exit
+            }
+            table = "mbr"
+            end = 0
+            for (k = 0; k < 4; k++) {
+                off = 446 + 16 * k
+                if ((b[off] != 0 && b[off] != 128) || b[off + 4] == 0 || le(off + 12, 4) == 0)
+                    continue
+                if (b[off + 4] == 238)
+                    table = "gpt"
+                e = (le(off + 8, 4) + le(off + 12, 4)) * 512
+                if (e > end)
+                    end = e
+            }
+            if (table == "gpt") {
+                # 保护性 MBR 那一项盖住整个镜像，要看的是 GPT 分区项
+                ss = is_gpt_header(512) ? 512 : is_gpt_header(4096) ? 4096 : 0
+                size = le(ss + 84, 4)
+                if (!ss || size < 128) {
+                    print "broken"
+                    exit
+                }
+                first = le(ss + 72, 8) * ss
+                count = le(ss + 80, 4)
+                end = 0
+                for (i = 0; i < count && first + i * size + 48 <= n; i++) {
+                    off = first + i * size
+                    used = 0
+                    for (j = 0; j < 16; j++)
+                        if (b[off + j])
+                            used = 1
+                    if (used && (le(off + 40, 8) + 1) * ss > end)
+                        end = (le(off + 40, 8) + 1) * ss
+                }
+            }
+            if (end)
+                printf "%s %.0f\n", table, end
+            else
+                print "none"
+        }'
+}
+
+bytes_to_gib() {
+    awk -v n="$1" 'BEGIN { printf "%.1f GiB", n / 1073741824 }'
+}
+
+# 镜像的分区要落在目标盘内：装不下的话 stage 2 写满盘才发现，那时原系统已经没了。
+# stage 2 写到盘尾报 No space 时也以最后一个分区的末尾在盘内为准放行，两边判据一致
+check_img_fits_disk() {
+    local table end disk_size
+
+    if is_in_windows; then
+        echo "DD: Not checking whether the image fits the disk on Windows."
+        return
+    fi
+    find_main_disk
+    disk_size=$(lsblk -bdno SIZE /dev/$xda | awk '{print $1}')
+    read -r table end <<<"$(get_img_parts_end "$tmp/img-test")"
+    case "$table" in
+    none)
+        echo "DD: No partitions found at the start of the image; not checking whether it fits /dev/$xda."
+        ;;
+    broken)
+        error_and_exit "The image's MBR says it is GPT, but there is no GPT header after it."
+        ;;
+    *)
+        echo "DD: The image's $(to_upper <<<"$table") partitions end at $(bytes_to_gib "$end"); /dev/$xda is $(bytes_to_gib "$disk_size")."
+        if [ "$end" -gt "$disk_size" ]; then
+            error_and_exit "The image needs a disk of at least $end bytes; /dev/$xda has $disk_size."
+        fi
+        ;;
+    esac
+}
+
 add_community_repo_for_alpine() {
     local alpine_ver
 
@@ -689,7 +780,8 @@ setos() {
     # shellcheck disable=SC2154
     setos_dd() {
         # raw 包含 vhd
-        test_url $img 'raw raw.gzip raw.xz raw.zstd raw.tar.gzip raw.tar.xz raw.tar.zstd' img_type
+        test_url $img 'raw raw.gzip raw.xz raw.zstd raw.tar raw.tar.gzip raw.tar.xz raw.tar.zstd' img_type
+        check_img_fits_disk
 
         if is_efi; then
             install_pkg hexdump
@@ -775,7 +867,14 @@ verify_os_name() {
 
 verify_os_args() {
     case "$distro" in
-    dd) [ -n "$img" ] || error_and_exit "dd need --img" ;;
+    dd)
+        [ -n "$img" ] || error_and_exit "dd need --img"
+        # 写盘的是 stage 2 的 wget；file:// 之类过得了这边的 curl，到那边才失败
+        case "$(to_lower <<<"$img")" in
+        http://* | https://*) ;;
+        *) error_and_exit "--img takes an http:// or https:// URL: $img" ;;
+        esac
+        ;;
     esac
 }
 
@@ -977,15 +1076,15 @@ install_pkg() {
             return 0
         fi
 
-        # busybox fdisk 无法显示 mbr 分区表的 id
-        if [ "$cmd" = fdisk ] && is_have_cmd apk && $cmd |& grep -wq BusyBox; then
-            return 0
-        fi
-
-        # busybox grep 不支持 -oP
-        if [ "$cmd" = grep ] && is_have_cmd apk && $cmd |& grep -wq BusyBox; then
-            return 0
-        fi
+        # busybox fdisk 无法显示 mbr 分区表的 id，grep 不支持 -oP，
+        # tar 不认 GNU 的稀疏格式（Debian 的 tar.xz 镜像），解出来是空的
+        case "$cmd" in
+        fdisk | grep | tar)
+            if is_have_cmd apk && $cmd |& grep -wq BusyBox; then
+                return 0
+            fi
+            ;;
+        esac
 
         return 1
     }
@@ -1239,8 +1338,8 @@ find_main_disk() {
     fi
 
     # 检查 id 格式是否正确
-    if ! grep -Eix '[0-9a-f]{8}' <<<"$main_disk" &&
-        ! grep -Eix '[0-9a-f-]{36}' <<<"$main_disk"; then
+    if ! grep -Eiqx '[0-9a-f]{8}' <<<"$main_disk" &&
+        ! grep -Eiqx '[0-9a-f-]{36}' <<<"$main_disk"; then
         error_and_exit "Disk ID is invalid: $main_disk"
     fi
 }

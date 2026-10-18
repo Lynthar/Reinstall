@@ -10,6 +10,7 @@ on:
       - "tests/check_qcow_verify.sh"
       - "tests/check_debian_sources.sh"
       - "tests/check_dd_pipeline.sh"
+      - "tests/check_dd_image.sh"
       - "tests/check_sync_time.sh"
       - "tests/check_find_xda.sh"
       - "tests/check_ifupdown_config.sh"
@@ -26,6 +27,7 @@ on:
       - "tests/check_qcow_verify.sh"
       - "tests/check_debian_sources.sh"
       - "tests/check_dd_pipeline.sh"
+      - "tests/check_dd_image.sh"
       - "tests/check_sync_time.sh"
       - "tests/check_find_xda.sh"
       - "tests/check_ifupdown_config.sh"
@@ -37,7 +39,7 @@ permissions:
   contents: read
 jobs:
   tests:
-    name: 分区角色、镜像验签、Debian 源、DD 管道、时间同步、选盘、网络配置、引导项、失败路径与 root 密码
+    name: 分区角色、镜像验签、Debian 源、DD 管道与镜像预检、时间同步、选盘、网络配置、引导项、失败路径与 root 密码
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,6 +48,7 @@ jobs:
       - run: bash tests/check_qcow_verify.sh
       - run: bash tests/check_debian_sources.sh
       - run: bash tests/check_dd_pipeline.sh
+      - run: bash tests/check_dd_image.sh
       - run: bash tests/check_sync_time.sh
       - run: bash tests/check_find_xda.sh
       - run: bash tests/check_ifupdown_config.sh
@@ -61,7 +64,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: dd
-        run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz
+        run: |
+          set -o pipefail
+          sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" \
+            dd --img=https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-SelfInstall.raw.xz |&
+            tee /tmp/dd.log
+          # the image's partition table was read from its compressed head and compared with the disk
+          grep -q "^DD: The image's GPT partitions end at .*; /dev/[a-z0-9]* is " /tmp/dd.log
       - name: alpine
         run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" alpine
       - name: debian
