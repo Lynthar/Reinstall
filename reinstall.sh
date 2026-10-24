@@ -61,7 +61,7 @@ trap_err() {
 usage_and_exit() {
     cat <<EOF
 Usage: ./reinstall.sh debian   10|11|12|13
-                      ubuntu   18.04|20.04|22.04|24.04|26.04 [--minimal]
+                      ubuntu   18.04|20.04|22.04|24.04|26.04|26.10 [--minimal]
                       alpine   3.22|3.23
                       dd       --img="https://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
                       reset    (before rebooting: undo what the last run changed)
@@ -764,6 +764,7 @@ setos() {
         22.04) codename=jammy ;;
         24.04) codename=noble ;;
         26.04) codename=resolute ;;
+        26.10) codename=stonking ;;
         esac
 
         # cloud image
@@ -855,7 +856,7 @@ verify_os_name() {
 
     for os in \
         'debian   10|11|12|13' \
-        'ubuntu   18.04|20.04|22.04|24.04|26.04' \
+        'ubuntu   18.04|20.04|22.04|24.04|26.04|26.10' \
         'alpine   3.22|3.23' \
         'dd'; do
         read -r ds vers <<<"$os"
@@ -863,9 +864,12 @@ verify_os_name() {
         finalos=$(echo "$@" | to_lower | sed -n -E "s,^($ds)[ :-]?(|$vers_)$,\1 \2,p")
         if [ -n "$finalos" ]; then
             read -r distro releasever <<<"$finalos"
-            # 默认版本号
+            # 默认版本号：清单最后一项；ubuntu 是最后一个 LTS（偶数年的 .04），非 LTS 要点名才装
             if [ -z "$releasever" ] && [ -n "$vers" ]; then
                 releasever=$(awk -F '|' '{print $NF}' <<<"|$vers")
+                if [ "$ds" = ubuntu ]; then
+                    releasever=$(tr '|' '\n' <<<"$vers" | grep -E '[02468]\.04$' | tail -n 1)
+                fi
             fi
             return
         fi

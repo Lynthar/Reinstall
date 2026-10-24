@@ -12,8 +12,9 @@ machine comes back up in a temporary Alpine, then installs the target system
 from there. **This erases disks** — back up first, and try it on a machine you
 can rebuild.
 
-Four targets: Debian 10/11/12/13, Ubuntu 18.04/20.04/22.04/24.04/26.04, Alpine
-3.22/3.23, and `dd` of any raw image (over `http(s)://` only).
+Four targets: Debian 10/11/12/13, Ubuntu 18.04/20.04/22.04/24.04/26.04/26.10,
+Alpine 3.22/3.23, and `dd` of any raw image (over `http(s)://` only). Without a
+version you get the newest one listed; for Ubuntu that is the newest LTS, 26.04.
 Debian and Ubuntu go through official cloud images. Debian 10 and 11 are past
 official support, so the installed system uses Freexian's ELTS repository
 (`deb.freexian.com`); its signing key fingerprint is pinned in the script.
