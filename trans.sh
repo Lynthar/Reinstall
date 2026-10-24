@@ -10,7 +10,7 @@ set -eE
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=BA32C2BF-50EA-4056-86CF-065CA965B27A
+SCRIPT_VERSION=E65E8084-075D-4C7C-8DF5-9039E4CE3FDB
 
 TRUE=0
 FALSE=1
@@ -1165,6 +1165,7 @@ install_alpine() {
 
     # setup-disk 经 lbu 把临时系统的 /etc/resolv.conf 带了进来
     del_search_domains /os
+    set_hostname /os
 
     # 如果没有挂载 /proc
 
@@ -1297,6 +1298,27 @@ add_fix_eth_name_systemd_service() {
     add_systemd_service "$os_dir" fix-eth-name
 }
 
+# --hostname 给了就用它；没给时只给没带主机名的 Debian 镜像（12 / 13）填 debian，不然开机成了 localhost。
+# /etc/hostname 只写第一段，全名与短名写进 hosts 的 127.0.1.1 行：没有 nss-myhostname 的系统靠它解析本机名
+set_hostname() {
+    # shellcheck disable=SC2154
+    local os_dir=$1 name=$hostname short
+    if [ -z "$name" ]; then
+        if [ "$distro" != debian ] || grep -qs '[^[:space:]]' "$os_dir/etc/hostname"; then
+            return 0
+        fi
+        name=debian
+    fi
+    short=${name%%.*}
+    echo "$short" >"$os_dir/etc/hostname"
+    sed -i '/^127\.0\.1\.1[[:space:]]/d' "$os_dir/etc/hosts"
+    if [ "$short" = "$name" ]; then
+        printf '127.0.1.1\t%s\n' "$name" >>"$os_dir/etc/hosts"
+    else
+        printf '127.0.1.1\t%s %s\n' "$name" "$short" >>"$os_dir/etc/hosts"
+    fi
+}
+
 basic_init() {
     os_dir=$1
 
@@ -1312,6 +1334,8 @@ basic_init() {
             chroot $os_dir systemd-firstboot --timezone="${timezone:-UTC}"
         fi
     fi
+
+    set_hostname $os_dir
 
     # gentoo 不会自动创建 machine-id
     clear_machine_id $os_dir
@@ -1982,11 +2006,12 @@ EOF
         else
             create_ifupdown_config $os_dir/etc/network/interfaces
 
-            # 服务不存在时会报错
-            chroot $os_dir systemctl disable resolvconf systemd-networkd systemd-resolved 2>/dev/null || true
+            # 镜像的 cloud-ifupdown-helper 给 interfaces 里没有的网卡往 /run/network/interfaces.d 写 DHCP 配置、启动 ifup@，
+            # 我们的 interfaces 不引用那里；首启时 interfaces 里还是临时系统的 eth0，ifup@ 必然失败，系统成了 degraded
+            rm -f $os_dir/etc/udev/rules.d/75-cloud-ifupdown.rules \
+                $os_dir/etc/network/cloud-ifupdown-helper $os_dir/etc/network/cloud-interfaces-template
 
             chroot_apt_install $os_dir ifupdown
-            chroot_apt_remove $os_dir resolvconf netplan.io systemd-resolved
             chroot $os_dir systemctl enable networking
 
             # networking 服务静态时不更新 resolv.conf，也没装 rdnssd，留临时系统那份
@@ -2401,7 +2426,7 @@ chroot_apt_remove() {
         fi
     done
 
-    # 删除 resolvconf 时会弹出建议重启，因此添加 noninteractive
+    # 清除 grub 包时 debconf 会问要不要删掉 /boot/grub，没人答，因此添加 noninteractive
     DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get $apt_opts remove --purge --allow-remove-essential -y $pkgs
 }
 

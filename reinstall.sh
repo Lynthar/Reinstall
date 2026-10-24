@@ -11,7 +11,7 @@ confhome=https://raw.githubusercontent.com/Lynthar/Reinstall/main
 insecure_opt=
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=BA32C2BF-50EA-4056-86CF-065CA965B27A
+SCRIPT_VERSION=E65E8084-075D-4C7C-8DF5-9039E4CE3FDB
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -74,6 +74,8 @@ Usage: ./reinstall.sh debian   10|11|12|13
                       [--no-web]                 (disable web log viewer entirely)
                       [--cloud-init-network]     (dd only: write this machine's network config into
                                                   the image's cloud-init as a NoCloud seed)
+                      [--hostname NAME]          (not with dd; default: the image's own, "debian"
+                                                  when a Debian image has none)
                       [--timezone TZ]            (default: UTC)
                       [--detect-timezone]        (auto-detect via ipapi.co, leaks IP)
                       [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
@@ -240,6 +242,12 @@ is_digit() {
 
 is_port_valid() {
     is_digit "$1" && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+# 点分的若干段，每段 1-63 位小写字母、数字与连字符，不以连字符开头结尾，整体不超过 253 位
+is_hostname_valid() {
+    local re='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+    [ ${#1} -le 253 ] && [[ "$1" =~ $re ]]
 }
 
 get_function() {
@@ -870,6 +878,9 @@ verify_os_name() {
 verify_os_args() {
     if [ -n "$cloud_init_network" ] && [ "$distro" != dd ]; then
         error_and_exit "--cloud-init-network only works with dd."
+    fi
+    if [ -n "$hostname" ] && [ "$distro" = dd ]; then
+        error_and_exit "--hostname does not work with dd: the image is written as it is."
     fi
     case "$distro" in
     dd)
@@ -2231,7 +2242,7 @@ build_extra_cmdline() {
     # https://answers.launchpad.net/ubuntu/+question/249456
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
     for key in confhome hold force_boot_mode cloud_image main_disk \
-        ssh_port web_port web_public no_web timezone cloud_init_network; do
+        ssh_port web_port web_public no_web timezone cloud_init_network hostname; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -2623,6 +2634,7 @@ long_opts=
 for o in ci debug minimal help detect-timezone password-stdin web-public no-web \
     allow-insecure-bootstrap cloud-init-network \
     hold: sleep: \
+    hostname: \
     img: \
     passwd: password: \
     ssh-port: \
@@ -2809,6 +2821,11 @@ EOF
     --cloud-init-network)
         cloud_init_network=1
         shift
+        ;;
+    --hostname)
+        hostname=$(to_lower <<<"$2")
+        is_hostname_valid "$hostname" || error_and_exit "Invalid $1 value: $2"
+        shift 2
         ;;
     --)
         shift

@@ -19,6 +19,7 @@ on:
       - "tests/check_boot_entry.sh"
       - "tests/check_failure_paths.sh"
       - "tests/check_root_password.sh"
+      - "tests/check_hostname.sh"
       - "tests/lib.sh"
   pull_request:
     paths:
@@ -38,12 +39,13 @@ on:
       - "tests/check_boot_entry.sh"
       - "tests/check_failure_paths.sh"
       - "tests/check_root_password.sh"
+      - "tests/check_hostname.sh"
       - "tests/lib.sh"
 permissions:
   contents: read
 jobs:
   tests:
-    name: 分区角色、镜像验签、Debian 源、DD 管道与镜像预检、时间同步、选盘、网络配置、cloud-init 种子、引导项、失败路径与 root 密码
+    name: 分区角色、镜像验签、Debian 源、DD 管道与镜像预检、时间同步、选盘、网络配置、cloud-init 种子、引导项、失败路径、root 密码与主机名
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,6 +67,7 @@ jobs:
       - run: bash tests/check_boot_entry.sh
       - run: bash tests/check_failure_paths.sh
       - run: bash tests/check_root_password.sh
+      - run: bash tests/check_hostname.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest
@@ -90,7 +93,7 @@ jobs:
         # passing --ci is redundant
         run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" debian
       - name: ubuntu
-        run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" ubuntu
+        run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" --hostname web1.example.com ubuntu
       - name: BootNext points at the entry whose grub.cfg was written
         run: |
           entries=$(sudo efibootmgr)
@@ -100,6 +103,8 @@ jobs:
           # each run first undid the one before it
           test "$(grep -c ' reinstall (' <<<"$entries")" = 1
           sudo grep -q '^menuentry "reinstall (ubuntu' /boot/efi/EFI/reinstall/grub.cfg
+          # --hostname reaches stage 2 on the kernel command line
+          sudo grep -q ' extra_hostname=web1.example.com' /boot/efi/EFI/reinstall/grub.cfg
           # the downloads and the unpacked initrd go once the boot entry is written
           test ! -e /reinstall-tmp
       - name: initrd carries the repository files trans.sh uses

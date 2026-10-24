@@ -66,10 +66,11 @@ it before you share it.
 
 Other flags you'll reach for: `--timezone`, `--ssh-port`, `--web-port`,
 `--no-web`, `--hold 1|2` (stop in the installer environment, or don't reboot at
-the end), `--force-boot-mode bios|efi`, `-x` for debugging, and `--commit <SHA>`
-to pin the bootstrap scripts. There's no config file and no environment
-variables — everything is a flag. DNS is hardcoded to `1.1.1.1` and `8.8.8.8`,
-with Cloudflare and Google for IPv6.
+the end), `--force-boot-mode bios|efi`, `-x` for debugging, `--commit <SHA>`
+to pin the bootstrap scripts, and `--hostname <name>` (not with dd; without it you
+get the image's own name, or `debian` when a Debian image has none). There's no
+config file and no environment variables — everything is a flag. DNS is hardcoded
+to `1.1.1.1` and `8.8.8.8`, with Cloudflare and Google for IPv6.
 
 Take care with `dd` on a machine with a static IP (no DHCP): the image goes on as
 it is, so it has to carry this machine's addresses itself, or that address family

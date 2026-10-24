@@ -59,7 +59,8 @@ ssh -L 8080:127.0.0.1:80 root@your-server
 
 其它常用旗标：`--timezone`、`--ssh-port`、`--web-port`、`--no-web`、
 `--hold 1|2`（停在安装环境或装完不重启）、`--force-boot-mode bios|efi`、`-x` 调试、
-`--commit <SHA>` 钉住引导脚本的版本。没有配置文件也没有环境变量，行为全部由旗标决定；
+`--commit <SHA>` 钉住引导脚本的版本，`--hostname <名字>` 设主机名（dd 不收；不给时用镜像
+自带的，Debian 镜像没带就是 `debian`）。没有配置文件也没有环境变量，行为全部由旗标决定；
 DNS 写死在 `1.1.1.1` 与 `8.8.8.8`（IPv6 对应 Cloudflare 与 Google）。
 
 静态 IP 的机器（没有 DHCP）上 dd 要当心：镜像照原样写进去，得自己带着这台机器的地址，
