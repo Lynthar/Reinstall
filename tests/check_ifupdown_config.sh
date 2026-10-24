@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs create_ifupdown_config from trans.sh on stubbed probe results: /dev/netconf as
 # initrd-network.sh leaves it, an rdisc6 answer and resolv.conf. The file it writes is
-# the only network config alpine and debian get, so a wrong stanza means no network.
+# the only network config alpine and debian 10 / 11 get, so a wrong stanza means no network.
 # Also runs initrd-network.sh's add_missing_dns, which fills that resolv.conf: the
 # resolvers it adds are the ones the static stanzas and debian's resolv.conf carry.
 set -euo pipefail
@@ -89,7 +89,7 @@ for shell in "${shells[@]}"; do
     netconf dhcpv4=1 dhcpv6_or_slaac=1 ipv4_has_internet=1 ipv6_has_internet=1
     ra Yes No No 2606:4700:4700::1111
     : >"$work/v6addr"
-    expect "dhcp4 + slaac with rdnss" "$shell" debian 12 "
+    expect "dhcp4 + slaac with rdnss" "$shell" debian 11 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet dhcp
@@ -103,7 +103,7 @@ iface eth0 inet6 auto"
     check "$shell / alpine starts at lo" "$(head -1 "$work/interfaces")" "auto lo"
 
     netconf ipv4_addr=203.0.113.10/24 ipv4_gateway=203.0.113.1 ipv4_has_internet=1
-    expect "static ipv4 takes the live ipv4 resolvers" "$shell" debian 12 "
+    expect "static ipv4 takes the live ipv4 resolvers" "$shell" debian 11 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet static
@@ -115,18 +115,13 @@ iface eth0 inet static
     netconf dhcpv4=1 dhcpv6_or_slaac=1 ipv4_has_internet=1 ipv6_has_internet=1
     ra No Yes No
     echo "2: eth0    inet6 2001:db8::5/128 scope global dynamic" >"$work/v6addr"
-    expect "dhcpv6 on debian 12" "$shell" debian 12 "
+    expect "dhcpv6" "$shell" debian 11 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet dhcp
 iface eth0 inet6 dhcp"
-    expect "dhcpv6 on debian 13 uses auto" "$shell" debian 13 "
-# mac 52:54:00:12:34:56
-auto eth0
-iface eth0 inet dhcp
-iface eth0 inet6 auto"
     : >"$work/v6addr"
-    expect "dhcpv6 flag without an address is not dhcpv6" "$shell" debian 12 "
+    expect "dhcpv6 flag without an address is not dhcpv6" "$shell" debian 11 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet dhcp"
@@ -134,7 +129,7 @@ iface eth0 inet dhcp"
     netconf dhcpv6_or_slaac=1 should_disable_accept_ra=1 should_disable_autoconf=1 ipv6_has_internet=1 \
         ipv6_addr=2001:db8::10/64 ipv6_gateway=2001:db8::1
     ra Yes No No
-    expect "slaac address replaced by the old static one" "$shell" debian 12 "
+    expect "slaac address replaced by the old static one" "$shell" debian 11 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet6 static
@@ -154,7 +149,7 @@ iface eth0 inet6 static
     pre-up echo 0 >/proc/sys/net/ipv6/conf/eth0/autoconf"
 
     netconf dhcpv4=1 ipv4_has_internet=1 should_disable_accept_ra=1 should_disable_autoconf=1
-    expect "ra and autoconf off without an ipv6 stanza get inet6 manual" "$shell" debian 12 "
+    expect "ra and autoconf off without an ipv6 stanza get inet6 manual" "$shell" debian 11 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet dhcp
@@ -164,7 +159,7 @@ iface eth0 inet6 manual
 
     netconf dhcpv4=1 dhcpv6_or_slaac=1 ipv6_has_internet=1
     ra Yes No No 2606:4700:4700::1111
-    expect "ipv4 without internet gets no stanza" "$shell" debian 12 "
+    expect "ipv4 without internet gets no stanza" "$shell" debian 11 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet6 auto"

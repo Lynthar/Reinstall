@@ -1,7 +1,7 @@
 #!/bin/bash
-# Runs trans.sh's warn_static_network and create_cloud_init_network_v2 (also ubuntu's netplan file)
-# on stubbed probes: /dev/netconf, an rdisc6 answer, resolv.conf. That config is all the system
-# learns of this network: it must match NICs by MAC without renaming them and mark routes on-link.
+# Runs trans.sh's warn_static_network and create_cloud_init_network_v2 (also the netplan file of
+# ubuntu and debian 12 / 13) on stubbed probes: /dev/netconf, an rdisc6 answer, resolv.conf. It is
+# all the system learns of this network: match NICs by MAC without renaming them, routes on-link.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)

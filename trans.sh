@@ -1010,16 +1010,7 @@ EOF
             echo "iface $ethx inet6 auto" >>$conf_file
 
         elif is_dhcpv6; then
-            # debian 13 使用 ifupdown + dhcpcd-base
-            # inet/inet6 都配置成 dhcp 时，重启后 dhcpv4 会丢失
-            # 手动 systemctl restart networking 后正常
-            # 删除 dhcpcd-base 安装 isc-dhcp-client（类似 debian 12 升级到 13），轮到 dhcpv6 丢失
-            # shellcheck disable=SC2154
-            if [ "$distro" = debian ] && [ "$releasever" -ge 13 ]; then
-                echo "iface $ethx inet6 auto" >>$conf_file
-            else
-                echo "iface $ethx inet6 dhcp" >>$conf_file
-            fi
+            echo "iface $ethx inet6 dhcp" >>$conf_file
 
         elif is_staticv6; then
             get_netconf_to ipv6_addr
@@ -1909,6 +1900,7 @@ modify_linux() {
         # 安装期间只用 prepare_debian_sources 探过的源；≤11 装完也用它，≥12 装完用回镜像自带的
         cp $apt_dir/sources.list $os_dir/etc/apt/reinstall.list
         apt_opts="-o Dir::Etc::SourceList=/etc/apt/reinstall.list -o Dir::Etc::SourceParts=-"
+        # shellcheck disable=SC2154
         if [ "$releasever" -le 11 ]; then
             cp $apt_dir/keyring.gpg $os_dir/usr/share/keyrings/freexian-archive-extended-lts.gpg
             cp $apt_dir/sources.list $os_dir/etc/apt/sources.list
@@ -1970,30 +1962,37 @@ modify_linux() {
             UCF_FORCE_CONFFMISS=1 chroot $os_dir dpkg-reconfigure openssh-server
         fi
 
-        # 镜像自带的网络管理器
-        # debian 11 ifupdown
-        # debian 12 netplan + networkd + resolved
-        # ifupdown dhcp 不支持 24位掩码+不规则网关?
+        # 网络：12 起镜像自带 netplan + networkd + resolved，就用它们；10 / 11 是 ifupdown
+        if [ "$releasever" -ge 12 ]; then
+            # 镜像自带的 netplan 文件（现在是 90-default.yaml）按网卡名全开 DHCP，生成的 .network 按文件名
+            # 排在按 MAC 匹配的那份前面：留下任何一份，静态配置都会被它盖掉
+            rm -f $os_dir/etc/netplan/*.yaml
+            create_netplan_config $os_dir/etc/netplan/50-cloud-init.yaml
 
-        create_ifupdown_config $os_dir/etc/network/interfaces
+            # Debian 编译时默认开 LLMNR：resolved 向同网段应答主机名；13 起单标签名只发 LLMNR 组播，
+            # 同网段谁都能抢答，查不到要等约 8 秒
+            mkdir -p $os_dir/etc/systemd/resolved.conf.d
+            cat <<EOF >$os_dir/etc/systemd/resolved.conf.d/90-disable-llmnr-mdns.conf
+[Resolve]
+LLMNR=no
+MulticastDNS=no
+EOF
+            # resolv.conf 要还回 resolved 的符号链接，否则 DNS 冻结在临时系统的那几个
+            restore_resolv_conf $os_dir
+        else
+            create_ifupdown_config $os_dir/etc/network/interfaces
 
-        # debian 10 11 云镜像安装了 resolvconf
-        # debian 12 云镜像安装了 netplan systemd-resolved
-        # 云镜像用了 cloud-init 自动配置网络，用户是无感的，因此官方云镜像可以随便选择网络管理器
-        # 但我们的系统安装后用户可能有手动配置网络的需求，因此用回 iso 安装时的网络管理器 ifupdown
+            # 服务不存在时会报错
+            chroot $os_dir systemctl disable resolvconf systemd-networkd systemd-resolved 2>/dev/null || true
 
-        # 服务不存在时会报错
-        chroot $os_dir systemctl disable resolvconf systemd-networkd systemd-resolved 2>/dev/null || true
+            chroot_apt_install $os_dir ifupdown
+            chroot_apt_remove $os_dir resolvconf netplan.io systemd-resolved
+            chroot $os_dir systemctl enable networking
 
-        chroot_apt_install $os_dir ifupdown
-        chroot_apt_remove $os_dir resolvconf netplan.io systemd-resolved
+            # networking 服务静态时不更新 resolv.conf，也没装 rdnssd，留临时系统那份
+            keep_now_resolv_conf $os_dir
+        fi
         chroot_apt_autoremove $os_dir
-        chroot $os_dir systemctl enable networking
-
-        # 静态时 networking 服务不会根据 /etc/network/interfaces 更新 resolv.conf
-        # 动态时使用了 isc-dhcp-client 支持自动更新 resolv.conf
-        # 另外 debian iso 不会安装 rdnssd
-        keep_now_resolv_conf $os_dir
 
         chroot $os_dir apt-get clean
         rm $os_dir/etc/apt/reinstall.list
