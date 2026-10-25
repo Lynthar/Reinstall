@@ -142,7 +142,12 @@ set -eE
 . "$work/fns1.sh"
 echo NEW | insert_into_file "$work/file" "\$1" "\$2"
 CASE
-for args in "after nine" "before nine" "after o"; do
+printf 'one\ntwo\nthree\n' >"$work/file"
+rc=0
+bash "$work/case1.sh" replace two 2>"$work/err" || rc=$?
+check "initramfs line replaced: exit" "$rc" 0
+check "initramfs line replaced in place" "$(tr '\n' ' ' <"$work/file")" "one NEW three "
+for args in "after nine" "before nine" "replace nine" "after o"; do
     printf 'one\ntwo\nthree\n' >"$work/file"
     rc=0
     # shellcheck disable=SC2086

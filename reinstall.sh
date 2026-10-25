@@ -13,6 +13,10 @@ insecure_opt=
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 SCRIPT_VERSION=E65E8084-075D-4C7C-8DF5-9039E4CE3FDB
 
+# 装 dd / debian / ubuntu 时临时系统的 Alpine 版本；装 alpine 时临时系统就是目标版本。
+# 换版本前先对它的 initramfs 核一遍 mod_initrd_alpine 的锚点，与目标清单无关
+LIVE_ALPINE_VER=3.24
+
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
 
@@ -62,7 +66,7 @@ usage_and_exit() {
     cat <<EOF
 Usage: ./reinstall.sh debian   10|11|12|13
                       ubuntu   18.04|20.04|22.04|24.04|26.04|26.10 [--minimal]
-                      alpine   3.22|3.23
+                      alpine   3.22|3.23|3.24
                       dd       --img="https://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
                       reset    (before rebooting: undo what the last run changed)
 
@@ -282,6 +286,10 @@ insert_into_file() {
 
     case "$location" in
     before) line_num=$((line_num - 1)) ;;
+    replace)
+        sed -i "${line_num}d" "$file"
+        line_num=$((line_num - 1))
+        ;;
     after) ;;
     *) error_and_exit "Unknown location: $location" ;;
     esac
@@ -857,7 +865,7 @@ verify_os_name() {
     for os in \
         'debian   10|11|12|13' \
         'ubuntu   18.04|20.04|22.04|24.04|26.04|26.10' \
-        'alpine   3.22|3.23' \
+        'alpine   3.22|3.23|3.24' \
         'dd'; do
         read -r ds vers <<<"$os"
         vers_=${vers//\./\\\.}
@@ -2439,6 +2447,16 @@ EOF
     insert_into_file init after '^want_tiny_cloud\(\) \{' <<EOF
         return 1
 EOF
+
+    # hack 7 3.24 的 init 把 active 整行当成一个 tty 名，tty0 解析不到它指向的 VT，inittab 多出一个
+    # tty0 的 getty：控制台上两个登录提示，装好的 alpine 经 lbu 带走同一份。改成逐词读；没有这行就不动
+    # shellcheck disable=SC2016
+    tty_line='done < "$ROOT"/sys/class/tty/"$1"/active'
+    if grep -qF -- "$tty_line" init; then
+        insert_into_file init replace "$tty_line" -F <<EOF
+    done < <(xargs -n 1 <"\$ROOT"/sys/class/tty/"\$1"/active)
+EOF
+    fi
 }
 
 mod_initrd() {
@@ -2958,9 +2976,8 @@ alpine)
     setos nextos $distro $releasever
     ;;
 dd | debian | ubuntu)
-    alpine_ver_for_trans=$(get_latest_distro_releasever alpine)
     setos finalos $distro $releasever
-    setos nextos alpine $alpine_ver_for_trans
+    setos nextos alpine $LIVE_ALPINE_VER
     ;;
 esac
 

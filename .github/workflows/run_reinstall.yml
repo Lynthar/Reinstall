@@ -63,7 +63,7 @@ jobs:
       - run: bash tests/check_cloud_init_network.sh
       # in Alpine, as in the Live OS: its lsblk reads filesystem types itself, Ubuntu's asks udev
       - run: >-
-          docker run --rm --privileged -v "$PWD":/repo:ro alpine:3.23 sh -c
+          docker run --rm --privileged -v "$PWD":/repo:ro alpine:3.24 sh -c
           'apk add -q bash busybox util-linux parted e2fsprogs xfsprogs btrfs-progs lvm2 dosfstools &&
           mount -t devtmpfs devtmpfs /dev && bash /repo/tests/check_cloud_init_seed.sh'
       - run: bash tests/check_boot_entry.sh
@@ -89,6 +89,10 @@ jobs:
           grep -q "^DD: The image's GPT partitions end at .*; /dev/[a-z0-9]* is " /tmp/dd.log
           # the switch reaches stage 2 on the kernel command line
           sudo grep -q ' extra_cloud_init_network=1' /boot/efi/EFI/reinstall/grub.cfg
+          # the Live OS for dd comes from the one constant, not from the alpine target list
+          live=$(sed -n 's/^LIVE_ALPINE_VER=//p' reinstall.sh)
+          test -n "$live"
+          sudo grep -q " modloop=http://dl-cdn.alpinelinux.org/alpine/v$live/" /boot/efi/EFI/reinstall/grub.cfg
       - name: alpine
         run: sudo bash reinstall.sh --debug --password 123@@@ --commit "$COMMIT" alpine
       - name: debian

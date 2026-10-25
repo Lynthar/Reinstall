@@ -30,7 +30,7 @@ said() { grep -qF -- "$2" "$1" 2>/dev/null && echo yes || echo no; }
 
 check "ubuntu takes the newest LTS, not 26.10" "$(parsed ubuntu)" "ubuntu 26.04"
 check "debian takes the newest" "$(parsed debian)" "debian 13"
-check "alpine takes the newest" "$(parsed alpine)" "alpine 3.23"
+check "alpine takes the newest" "$(parsed alpine)" "alpine 3.24"
 check "dd has no version" "$(parsed dd)" "dd "
 
 check "ubuntu 26.10 named" "$(parsed ubuntu 26.10)" "ubuntu 26.10"
