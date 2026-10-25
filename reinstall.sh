@@ -1625,8 +1625,10 @@ add_efi_entry_in_linux() {
     install_pkg efibootmgr
 
     for efi_part in $(get_maybe_efi_dirs_in_linux); do
-        # find 找没找到都返回 0
-        if find $efi_part -iname "*.efi" | grep -q .; then
+        # find 找没找到都返回 0。-xdev：vfat 的 /boot 下挂着 ESP 时，别把 ESP 里的文件算成 /boot 的。
+        # 末尾的 / 不能删：它让 stat 先触发 autofs 挂载，否则 -xdev 记下的是 autofs 的设备，
+        # 没挂上的 /efi（Arch）里的文件全被跳过
+        if find $efi_part/ -xdev -iname "*.efi" | grep -q .; then
             efi_reinstall_dir=$efi_part/EFI/reinstall
             basename=$(basename $source)
             mkdir -p $efi_reinstall_dir

@@ -27,6 +27,30 @@ Nothing to install. Download the script and run it as root:
 curl -O https://raw.githubusercontent.com/Lynthar/Reinstall/main/reinstall.sh
 ```
 
+To dd a Linux image from Windows, set up Cygwin yourself first: there's no
+upstream-style `reinstall.bat` here, and under Cygwin the script installs
+nothing, so a missing command fails the step that needs it. Install it from
+PowerShell as below. The second and third lines let the PowerShell 5.1 that
+ships with older Windows download over TLS 1.2. The installer has to go through
+`Start-Process -Wait` and get `--wait`; otherwise PowerShell returns before
+setup is done, including when setup relaunches itself to get admin rights.
+
+```powershell
+cd $env:TEMP
+$sp = [Net.ServicePointManager]::SecurityProtocol
+[Net.ServicePointManager]::SecurityProtocol = $sp -bor [Net.SecurityProtocolType]::Tls12
+$url = 'https://www.cygwin.com/setup-x86_64.exe'
+Invoke-WebRequest $url -OutFile setup-x86_64.exe -UseBasicParsing
+$pkgs = 'curl,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,bind-utils,libiconv,binutils'
+$site = 'https://mirrors.kernel.org/sourceware/cygwin'
+Start-Process -Wait .\setup-x86_64.exe -ArgumentList `
+    "--quiet-mode --wait --only-site --site $site --packages $pkgs"
+```
+
+Then open a Cygwin terminal as administrator (otherwise the script stops with
+`Please run as administrator.`), fetch the script there with the curl line
+above, and run it as in Usage, just without `sudo`.
+
 ## Usage
 
 ```bash

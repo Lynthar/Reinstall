@@ -25,6 +25,27 @@ Debian 10 / 11 的官方支持已经结束，装好后用 Freexian 的 ELTS 源�
 curl -O https://raw.githubusercontent.com/Lynthar/Reinstall/main/reinstall.sh
 ```
 
+要从 Windows 上 dd 一个 Linux 镜像，得先自己装好 Cygwin：这里没有上游的
+`reinstall.bat`，脚本在 Cygwin 下也不替你装包，缺哪个命令就在哪一步失败。在 PowerShell
+里照下面这样装。第二、三行让老 Windows 自带的 PowerShell 5.1 也能用 TLS 1.2 下载；安装器
+要用 `Start-Process -Wait` 起，再加 `--wait`，否则它自己申请管理员权限另起一份时，PowerShell
+不等装完就返回。
+
+```powershell
+cd $env:TEMP
+$sp = [Net.ServicePointManager]::SecurityProtocol
+[Net.ServicePointManager]::SecurityProtocol = $sp -bor [Net.SecurityProtocolType]::Tls12
+$url = 'https://www.cygwin.com/setup-x86_64.exe'
+Invoke-WebRequest $url -OutFile setup-x86_64.exe -UseBasicParsing
+$pkgs = 'curl,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,bind-utils,libiconv,binutils'
+$site = 'https://mirrors.kernel.org/sourceware/cygwin'
+Start-Process -Wait .\setup-x86_64.exe -ArgumentList `
+    "--quiet-mode --wait --only-site --site $site --packages $pkgs"
+```
+
+装好后以管理员身份打开 Cygwin 终端（不是管理员的话脚本会报 `Please run as administrator.`），
+在里面用上面那条 curl 下载脚本，再照下面用法里的命令跑，只是不用 `sudo`。
+
 ## 用法
 
 ```bash

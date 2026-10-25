@@ -2,8 +2,9 @@
 # Runs the trans.sh helpers that stand between a failure and the user. Under
 # busybox ash a function that fails through `return N` stops the ERR trap after
 # its first command, so a download that keeps failing must still reach
-# error_and_exit; an anchor that matches nothing must stop the patch instead of
-# landing on the wrong line; and the swap file must not depend on chattr +C.
+# error_and_exit and name the command it gave up on; an anchor that matches
+# nothing must stop the patch instead of landing on the wrong line; and the
+# swap file must not depend on chattr +C.
 # What error_and_exit tells the user hinges on whether the disk was written yet:
 # before that a reboot returns to the current system, after it a reboot loses both.
 set -euo pipefail
@@ -50,6 +51,7 @@ swapon() { echo "swapon \$*"; }
 case \$1 in
 retry_fails) retry 2 0 false ;;
 retry_in_if) if retry 2 0 false; then echo "wrong branch"; else echo "fell back"; fi ;;
+retry_in_if_then_fail) if retry 2 0 false; then :; fi; false ;;
 retry_recovers) retry 2 0 fails_once && echo "recovered" ;;
 insert) echo NEW | insert_into_file "$work/file" "\$2" "\$3" ;;
 swap) create_swap 64 "$work/swapfile" ;;
@@ -85,12 +87,18 @@ for sh in "${shells[@]}"; do
     run_case "$sh" retry_fails
     check "retry that keeps failing: exit" "$rc" 1
     check "retry that keeps failing: says to retry" "$(has "$err" "Run '/trans.sh' to retry.")" yes
+    check "retry that keeps failing: names the command" "$(has "$err" "Gave up after 2 tries: false (exit 1)")" yes
     check "retry that keeps failing: stops there" "$(has "$out" end)" no
 
     run_case "$sh" retry_in_if
     check "retry inside if: takes the else branch" "$out" "fell back
 end"
     check "retry inside if: exit" "$rc" 0
+
+    run_case "$sh" retry_in_if_then_fail
+    check "failure after a retry inside if: exit" "$rc" 1
+    check "failure after a retry inside if: names its own line" "$(has "$err" "return 1")" yes
+    check "failure after a retry inside if: not blamed on the retry" "$(has "$err" "Gave up")" no
 
     run_case "$sh" retry_recovers
     check "retry that succeeds the second time" "$out" "recovered

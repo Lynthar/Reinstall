@@ -108,9 +108,14 @@ trap_err() {
     ret_no=$2
 
     error_and_exit "$(
-        echo "Line $line_no return $ret_no"
-        if [ -f "/trans.sh" ]; then
-            sed -n "$line_no"p /trans.sh
+        # 行号落在 retry 里，指不到放弃的是哪条命令
+        if [ -n "$retry_gave_up" ]; then
+            echo "$retry_gave_up (exit $ret_no)"
+        else
+            echo "Line $line_no return $ret_no"
+            if [ -f "/trans.sh" ]; then
+                sed -n "$line_no"p /trans.sh
+            fi
         fi
     )"
 }
@@ -201,11 +206,13 @@ retry() {
         else
             ret=$?
             if [ $i -ge $max_try ]; then
-                # 让失败的命令自己触发 ERR，别用 return $ret：busybox ash 里 return 非零触发的
-                # 陷阱只跑 trap_err 的第一条命令就退出，报错与重试提示全丢。条件里调用时没有陷阱，
-                # 由不带参数的 return 带回 $ret
+                # 让失败的命令自己触发 ERR，别直接 return $ret：busybox ash 里 return 非零触发的陷阱
+                # 只跑 trap_err 的第一条命令就退出，报错与重试提示全丢。条件里调用时没有陷阱，走到
+                # 下面；retry_gave_up 必须清掉，否则之后不相干的报错也会指到这条命令
+                retry_gave_up="Gave up after $max_try tries: $*"
                 (exit $ret)
-                return
+                retry_gave_up=
+                return $ret
             fi
             sleep $interval
         fi
@@ -1094,10 +1101,12 @@ EOF
         fi
 
         # 禁用 ra
+        # alpine 的两行 pre-up 用 ifup 时才展开的 $IFACE：fix-eth-name 只改 iface / auto 行，写死的网卡名
+        # 开机后一变，要么关掉另一块的 RA，要么那个名字已不在、pre-up 失败、这块网卡起不来
         if should_disable_accept_ra; then
             if [ "$distro" = alpine ]; then
                 cat <<EOF >>$conf_file
-    pre-up echo 0 >/proc/sys/net/ipv6/conf/$ethx/accept_ra
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/accept_ra
 EOF
             else
                 cat <<EOF >>$conf_file
@@ -1110,7 +1119,7 @@ EOF
         if should_disable_autoconf; then
             if [ "$distro" = alpine ]; then
                 cat <<EOF >>$conf_file
-    pre-up echo 0 >/proc/sys/net/ipv6/conf/$ethx/autoconf
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/autoconf
 EOF
             else
                 cat <<EOF >>$conf_file

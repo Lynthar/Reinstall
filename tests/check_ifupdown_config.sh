@@ -138,15 +138,15 @@ iface eth0 inet6 static
     dns-nameserver 2606:4700:4700::1111
     accept_ra 0
     autoconf 0"
-    expect "alpine turns ra and autoconf off with pre-up" "$shell" alpine 3.23 "
+    expect "alpine turns ra and autoconf off with pre-up on \$IFACE" "$shell" alpine 3.23 "
 # mac 52:54:00:12:34:56
 auto eth0
 iface eth0 inet6 static
     address 2001:db8::10/64
     gateway 2001:db8::1
     dns-nameserver 2606:4700:4700::1111
-    pre-up echo 0 >/proc/sys/net/ipv6/conf/eth0/accept_ra
-    pre-up echo 0 >/proc/sys/net/ipv6/conf/eth0/autoconf"
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/accept_ra
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/autoconf"
 
     netconf dhcpv4=1 ipv4_has_internet=1 should_disable_accept_ra=1 should_disable_autoconf=1
     expect "ra and autoconf off without an ipv6 stanza get inet6 manual" "$shell" debian 11 "
