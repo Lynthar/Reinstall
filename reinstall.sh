@@ -1128,8 +1128,12 @@ is_valid_ram_size() {
 }
 
 check_ram() {
-    # 四个目标都是这个下限（debian / ubuntu 走云镜像），未实测
-    ram_min=256
+    # debian / ubuntu 装好的系统在 arm64 EFI 上 256 MiB 起不来（EFI stub 装不下内核与 initrd），
+    # alpine 与 dd 在 256 MiB 上实测装得成
+    case "$distro" in
+    debian | ubuntu) ram_min=512 ;;
+    *) ram_min=256 ;;
+    esac
 
     if is_in_windows; then
         ram_size=$(wmic memorychip get capacity | awk -F= '{sum+=$2} END {if(sum>0) print sum/1024/1024}')
