@@ -110,7 +110,11 @@ requests to find out:
 - **Azure**: when the NVMe disk sits behind Hyper-V's virtual PCI bus, an Alpine
   install adds `pci-hyperv` to the initramfs, or it wouldn't find its root at
   boot. The initramfs of Debian 11 and later and of Ubuntu 22.04 and later already
-  carries it; older releases haven't been tried on such a disk.
+  carries it; older releases haven't been tried on such a disk. With accelerated
+  networking the VF carries the synthetic NIC's MAC, so the network config written
+  for netplan (Debian 12 / 13, Ubuntu) and for dd matches the NIC by its driver as
+  well as its MAC; otherwise networkd configures the VF too, and Ubuntu waits two
+  extra minutes for the network at boot and ends up degraded.
 
 Changed your mind before rebooting?
 

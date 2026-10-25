@@ -1778,12 +1778,19 @@ mount_pseudo_fs() {
 # 默认路由一律 on-link（见过 /48 配网段外的 v6 网关）；SLAAC 也写 dhcp6，同 cloud-init 把 v1 转 netplan。
 # 探测会往 stdout 打字（rdisc6 的结果等），所以先探完再成段写进 $1
 create_cloud_init_network_v2() {
-    local file=$1 ethx v4 v6 accept_ra dns cur ns
+    local file=$1 ethx v4 v6 accept_ra dns cur ns driver
     echo 'version: 2' >"$file"
     echo 'ethernets:' >>"$file"
     for ethx in $(get_eths); do
         get_netconf_to mac_addr
-        v4='' v6='' accept_ra='' dns=''
+        v4='' v6='' accept_ra='' dns='' driver=''
+        # Azure 加速网络的 VF 与合成网卡同一个 MAC、挂在它下面。只认 MAC 的话 networkd 把 VF 也配上，
+        # 卡在 configuring，ubuntu 等 wait-online 超时、开机 degraded。有这样的网卡时再按驱动认
+        if ip -o link | grep -i "$mac_addr" | grep -q "master $ethx " &&
+            [ -e /sys/class/net/$ethx/device/driver ]; then
+            driver=$(basename "$(readlink -f /sys/class/net/$ethx/device/driver)")
+            info false "$ethx has a NIC with its MAC under it (Azure's accelerated networking VF): matching $ethx by driver $driver as well"
+        fi
         if is_dhcpv4; then
             v4=dhcp
         elif is_staticv4; then
@@ -1810,6 +1817,9 @@ create_cloud_init_network_v2() {
             echo "  $ethx:"
             echo "    match:"
             echo "      macaddress: \"$mac_addr\""
+            if [ -n "$driver" ]; then
+                echo "      driver: \"$driver\""
+            fi
             if [ "$v4" = dhcp ]; then
                 echo "    dhcp4: true"
             fi

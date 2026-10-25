@@ -87,7 +87,9 @@ DNS 写死在 `1.1.1.1` 与 `8.8.8.8`（IPv6 对应 Cloudflare 与 Google）。
   `mdev.conf`。dd 的镜像照原样写，屏幕上会提醒它得自带这条设置。
 - **Azure**：NVMe 盘挂在 Hyper-V 虚拟 PCI 总线后面时，装 Alpine 会把 `pci-hyperv` 加进
   initramfs，否则开机找不到根。Debian 11 起与 Ubuntu 22.04 起的 initramfs 本来就带它，
-  更老的版本在这种盘上没验过。
+  更老的版本在这种盘上没验过。开了加速网络时 VF 和合成网卡是同一个 MAC，写给 netplan
+  （Debian 12 / 13、Ubuntu）与 dd 的网络配置除了 MAC 还按驱动认网卡。否则 networkd
+  把 VF 也配上，Ubuntu 开机多等两分钟网络，最后是 degraded。
 
 重启之前反悔：
 

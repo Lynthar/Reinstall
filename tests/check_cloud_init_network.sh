@@ -1,7 +1,8 @@
 #!/bin/bash
 # Runs trans.sh's warn_static_network and create_cloud_init_network_v2 (also the netplan file of
-# ubuntu and debian 12 / 13) on stubbed probes: /dev/netconf, an rdisc6 answer, resolv.conf. It is
-# all the system learns of this network: match NICs by MAC without renaming them, routes on-link.
+# ubuntu and debian 12 / 13) on stubbed probes: /dev/netconf, an rdisc6 answer, resolv.conf, links.
+# It is all the system learns of this network: match NICs by MAC (and by driver when a VF shares
+# the MAC) without renaming them, routes on-link.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -12,14 +13,19 @@ trans=$repo/trans.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# trans.sh's collaborators, replaced. ip answers the one question the probes ask it
-# (does the NIC hold a global IPv6 address) from $work/v6addr.
+# trans.sh's collaborators, replaced. ip answers the two questions asked of it: does the NIC
+# hold a global IPv6 address ($work/v6addr), and which links are there ($work/links).
 cat >"$work/stubs.sh" <<STUBS
 info() { :; }
 warn() { echo "Warning: \$*" >&2; }
 apk() { :; }
 rdisc6() { cat "$work/ra"; }
-ip() { case "\$*" in *"-6 -o addr show scope global"*) cat "$work/v6addr" ;; esac; }
+ip() {
+    case "\$*" in
+    *"-6 -o addr show scope global"*) cat "$work/v6addr" ;;
+    *"-o link"*) cat "$work/links" ;;
+    esac
+}
 TRUE=0
 FALSE=1
 STUBS
@@ -30,7 +36,8 @@ for fn in get_eths get_netconf_to get_ra_to show_netconf get_current_dns \
     create_cloud_init_network_v2 create_netplan_config warn_static_network; do
     extract_fn "$trans" "$fn"
 done | sed -e "s|/dev/netconf|$work/netconf|g" -e "s|/etc/resolv.conf|$work/resolv.conf|g" \
-    -e "s|/tmp/network-config|$work/tmp-network-config|g" >"$work/fns.sh"
+    -e "s|/tmp/network-config|$work/tmp-network-config|g" -e "s|/sys/class/net/|$work/sys/class/net/|g" \
+    >"$work/fns.sh"
 
 cat >"$work/case.sh" <<CASE
 set -eE
@@ -44,6 +51,13 @@ esac
 CASE
 
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\n' >"$work/resolv.conf"
+: >"$work/links"
+
+# Azure with accelerated networking: the synthetic NIC eth0 is hv_netvsc, its VF eth1 has the same
+# MAC and sits under it, as `ip -o link` showed in the temporary system there
+mkdir -p "$work/drivers/hv_netvsc" "$work/sys/class/net/eth0/device"
+azure_links='2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP qlen 1000\    link/ether 60:45:bd:54:aa:57 brd ff:ff:ff:ff:ff:ff
+3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP800> mtu 1500 qdisc mq master eth0 state UP qlen 1000\    link/ether 60:45:bd:54:aa:57 brd ff:ff:ff:ff:ff:ff'
 
 # netconf <nic> <mac> <key=value>...: what initrd-network.sh wrote for one NIC; unset
 # flags are 0. The first call of a case clears the NICs of the previous one.
@@ -86,6 +100,17 @@ expect() {
         got="exited non-zero"
     fi
     check "$2 / $1" "$got" "$(sed '1{/^$/d;}' <<<"$3")"
+}
+
+# drivers <shell>: how many driver lines a freshly written network-config has.
+drivers() {
+    rm -f "$work/network-config"
+    # shellcheck disable=SC2086
+    if $1 "$work/case.sh" config >/dev/null 2>"$work/log"; then
+        grep -c 'driver:' "$work/network-config" || true
+    else
+        echo "exited non-zero"
+    fi
 }
 
 # warned <shell> <cloud_init_network>: what warn_static_network printed.
@@ -226,6 +251,29 @@ ethernets:
         "$(sed 1d "$work/50-cloud-init.yaml" | sed 's/^  //')" "$(cat "$work/network-config")"
     check "$shell / netplan file: first line" "$(head -1 "$work/50-cloud-init.yaml")" "network:"
     check "$shell / netplan file: mode" "$(stat -c %a "$work/50-cloud-init.yaml")" 600
+
+    netconf eth0 60:45:bd:54:aa:57 dhcpv4=1 ipv4_has_internet=1
+    echo "$azure_links" >"$work/links"
+    ln -sfn "$work/drivers/hv_netvsc" "$work/sys/class/net/eth0/device/driver"
+    expect "a vf with the same mac under it: matched by driver too" "$shell" '
+version: 2
+ethernets:
+  eth0:
+    match:
+      macaddress: "60:45:bd:54:aa:57"
+      driver: "hv_netvsc"
+    dhcp4: true'
+    # each breaks one premise: the vf is under another nic, has another mac, eth0 has no driver
+    echo "${azure_links/master eth0/master eth2}" >"$work/links"
+    check "$shell / same mac under another nic: no driver" "$(drivers "$shell")" 0
+    sed '2s/60:45:bd:54:aa:57/60:45:bd:54:aa:58/' <<<"$azure_links" >"$work/links"
+    check "$shell / another mac under eth0: no driver" "$(drivers "$shell")" 0
+    echo "$azure_links" >"$work/links"
+    rm "$work/sys/class/net/eth0/device/driver"
+    check "$shell / eth0 without a driver: no driver" "$(drivers "$shell")" 0
+    check "$shell / eth0 without a driver: still matched by mac" \
+        "$(grep -c 'macaddress: "60:45:bd:54:aa:57"' "$work/network-config")" 1
+    : >"$work/links"
 done
 
 finish
