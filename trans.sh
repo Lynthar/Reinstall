@@ -928,10 +928,6 @@ add_default_efi_to_nvram() {
 Warning: This machine is currently using EFI boot, but the main hard drive does not have an EFI partition.
 If this machine supports Legacy BIOS boot (CSM), you can safely restart into the new system by running the reboot command.
 If this machine does not support Legacy BIOS boot (CSM), you will not be able to enter the new system after rebooting.
-
-警告：本机目前使用 EFI 引导，但主硬盘没有 EFI 分区。
-如果本机支持 Legacy BIOS 引导 (CSM)，你可以运行 reboot 命令安全地重启到新系统。
-如果本机不支持 Legacy BIOS 引导 (CSM)，重启后将无法进入新系统。
 "
             exit
         fi

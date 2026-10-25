@@ -142,10 +142,7 @@ error_and_exit() {
 show_dd_password_tips() {
     warn false "
 This password is only used for SSH access to view logs during the installation.
-Password of the image will NOT modify.
-
-密码仅用于安装过程中通过 SSH 查看日志。
-镜像的密码不会被修改。
+The image's own passwords are not changed.
 "
 }
 
@@ -823,9 +820,7 @@ setos() {
                 echo 'DD: Image is not EFI.'
                 warn '
 The current machine uses EFI boot, but the DD image seems not an EFI image.
-Continue with DD?
-当前机器使用 EFI 引导，但 DD 镜像可能不是 EFI 镜像。
-继续 DD?'
+Continue with DD?'
                 read -r -p '[y/N]: '
                 if [[ "$REPLY" = [Yy] ]]; then
                     eval ${step}_confirmed_no_efi=1
@@ -1232,7 +1227,6 @@ del_comment_lines() {
 prompt_password() {
     info "prompt password"
     warn false "Leave blank to use a random password."
-    warn false "不填写则使用随机密码"
     while true; do
         # -s 隐藏输入，防止肩窥
         IFS= read -r -s -p "Password: " password
@@ -2488,8 +2482,7 @@ mod_initrd() {
     curl -Lo $initrd_dir/trans.sh $confhome/trans.sh
     if ! grep -iq "$SCRIPT_VERSION" $initrd_dir/trans.sh; then
         error_and_exit "
-This script is outdated, please download reinstall.sh again.
-脚本有更新，请重新下载 reinstall.sh"
+This script is outdated, please download reinstall.sh again."
     fi
 
     curl -Lo $initrd_dir/initrd-network.sh $confhome/initrd-network.sh
@@ -3029,7 +3022,7 @@ if [ -n "$ssh_port" ]; then
     echo "SSH Port: $ssh_port"
 fi
 
-if is_use_dd; then
+if is_use_dd && [ -z "$ssh_keys" ]; then
     show_dd_password_tips
 fi
 if is_alpine_live; then
