@@ -78,6 +78,17 @@ DNS 写死在 `1.1.1.1` 与 `8.8.8.8`（IPv6 对应 Cloudflare 与 Google）。
 - 种子按 netplan 的写法写，Debian、Ubuntu 的云镜像原样采用；不用 netplan 的镜像由
   cloud-init 自己转换，网关不在地址的网段里时，默认路由可能配不上。
 
+几家云厂商的机器有已知的坑，认出来会多做一步，并在屏幕和日志里说认出了什么、做了什么。
+识别只读本机的 DMI 与 sysfs，不往外发请求：
+
+- **腾讯云**（DMI 的 `sys_vendor`，CVM 与轻量都是）：部分机型的 virtio 盘一次请求超过
+  512 KiB 时，大块写入会出 I/O 错误。临时系统写盘前把 `max_sectors_kb` 设成 512；装好的
+  Debian、Ubuntu 写一条和腾讯自家镜像同样作用的 udev 规则并重建 initramfs，Alpine 写进
+  `mdev.conf`。dd 的镜像照原样写，屏幕上会提醒它得自带这条设置。
+- **Azure**：NVMe 盘挂在 Hyper-V 虚拟 PCI 总线后面时，装 Alpine 会把 `pci-hyperv` 加进
+  initramfs，否则开机找不到根。Debian 11 起与 Ubuntu 22.04 起的 initramfs 本来就带它，
+  更老的版本在这种盘上没验过。
+
 重启之前反悔：
 
 ```bash

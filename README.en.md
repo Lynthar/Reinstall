@@ -95,6 +95,23 @@ without renaming them. Nothing else in the image is touched.
   and when the gateway is outside the address's subnet the default route may not
   come up.
 
+Machines from a few cloud providers have known pitfalls. When the script
+recognises one it does one extra step, and says on screen and in the log what it
+found and what it did. It only reads the local DMI and sysfs, and sends no
+requests to find out:
+
+- **Tencent Cloud** (DMI `sys_vendor`, both CVM and Lighthouse): on some
+  instances a virtio disk fails heavy writes with I/O errors once a request goes
+  over 512 KiB. The temporary system sets `max_sectors_kb` to 512 before the
+  write; an installed Debian or Ubuntu gets a udev rule doing what the one in
+  Tencent's own images does, plus a rebuilt initramfs, and Alpine gets a line in
+  `mdev.conf`. A dd image is written as is, and the screen reminds you it has to
+  set this itself.
+- **Azure**: when the NVMe disk sits behind Hyper-V's virtual PCI bus, an Alpine
+  install adds `pci-hyperv` to the initramfs, or it wouldn't find its root at
+  boot. The initramfs of Debian 11 and later and of Ubuntu 22.04 and later already
+  carries it; older releases haven't been tried on such a disk.
+
 Changed your mind before rebooting?
 
 ```bash

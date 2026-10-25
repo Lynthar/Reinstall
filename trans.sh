@@ -425,6 +425,23 @@ get_all_disks() {
     ls /sys/block/ | grep -Ev '^(loop|sr|nbd)'
 }
 
+# get_drivers <sysfs 设备路径>：从设备往上逐级打出驱动，是模块的打模块名
+get_drivers() {
+    (
+        cd "$(readlink -f $1)"
+        while ! [ "$(pwd)" = / ]; do
+            if [ -d driver ]; then
+                if [ -d driver/module ]; then
+                    basename "$(readlink -f driver/module)"
+                else
+                    basename "$(readlink -f driver)"
+                fi
+            fi
+            cd ..
+        done
+    )
+}
+
 extract_env_from_cmdline() {
     # 提取 finalos/extra 到变量
     for prefix in finalos extra; do
@@ -560,7 +577,6 @@ cache_dmi_and_virt() {
             fi
         )
 
-        _dmi=$(dmidecode | grep -E '(Manufacturer|Asset Tag|Vendor): ' | awk -F': ' '{print $2}')
         _dmi_and_virt_cached=1
         apk del virt-what
     fi
@@ -569,6 +585,47 @@ cache_dmi_and_virt() {
 is_virt() {
     cache_dmi_and_virt
     [ -n "$_virt" ]
+}
+
+# 腾讯云部分机型的 virtio 盘，内核把 max_sectors_kb 设得比 512 大时，大块写入会出 I/O 错误；
+# 腾讯自己的镜像用 udev 规则设回 512。CVM 与轻量的 sys_vendor 都是这个
+is_tencent_cloud() {
+    [ "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" = 'Tencent Cloud' ]
+}
+
+# 第一次写盘之前调：Live OS 的内核同样会把它设大
+limit_tencent_disk_requests() {
+    local f
+    if is_tencent_cloud; then
+        info false "Tencent Cloud (DMI sys_vendor): limiting virtio disks to 512 KiB requests, as Tencent's own images do"
+        for f in /sys/block/vd*/queue/max_sectors_kb; do
+            if [ -e "$f" ] && ! echo 512 >"$f"; then
+                warn "Could not set $f to 512"
+            fi
+        done
+        if [ "$distro" = dd ]; then
+            warn "The dd image is written as is: unless it sets max_sectors_kb to 512 itself (Tencent's images do it with a udev rule), heavy writes on it may fail with I/O errors."
+        fi
+    fi
+}
+
+# 装好的系统开机后也要 512。initramfs-tools 与 dracut 都把 /etc/udev/rules.d 带进 initramfs，所以当场重建；
+# alpine 用 mdev，mkinitfs 不带 mdev.conf，挂上根之后才生效
+persist_tencent_disk_limit() {
+    local os_dir=$1
+    if is_tencent_cloud; then
+        info false "Tencent Cloud: the installed system limits its virtio disks to 512 KiB requests too"
+        if [ "$distro" = alpine ]; then
+            # 开头的 - 让 mdev 接着往下匹配，权限仍由后面 vd 那行定；mdev 要整个名字匹配，分区不中
+            insert_into_file $os_dir/etc/mdev.conf head '' <<'EOF'
+-vd[a-z]+ root:disk 0660 @echo 512 >/sys/block/$MDEV/queue/max_sectors_kb
+EOF
+        else
+            echo 'SUBSYSTEM=="block", KERNEL=="vd*[a-z]", ACTION=="add|change", ATTR{queue/max_sectors_kb}="512"' \
+                >$os_dir/etc/udev/rules.d/80-max-sectors-blk.rules
+            chroot $os_dir update-initramfs -u -k all
+        fi
+    fi
 }
 
 get_config() {
@@ -1179,6 +1236,9 @@ install_alpine() {
 
     mount_pseudo_fs /os
 
+    add_pci_hyperv_to_initramfs_if_needed
+    persist_tencent_disk_limit /os
+
     # 安装到硬盘后才安装各种应用
     # 避免占用 Live OS 内存
 
@@ -1257,6 +1317,16 @@ install_alpine() {
             swapoff -a
             rm /os/swapfile
         fi
+    fi
+}
+
+# Azure 的 NVMe 盘挂在 Hyper-V 的虚拟 PCI 总线后面，mkinitfs 默认不带 pci-hyperv，装好的 alpine 开机找不到根
+add_pci_hyperv_to_initramfs_if_needed() {
+    if get_drivers /sys/block/$xda | grep -qx pci_hyperv; then
+        info false "Azure: the disk sits behind Hyper-V's virtual PCI bus, adding pci-hyperv to the initramfs"
+        echo 'kernel/drivers/pci/controller/pci-hyperv.ko*' >/os/etc/mkinitfs/features.d/pci-hyperv.modules
+        sed -i '/^features="/s/"$/ pci-hyperv"/' /os/etc/mkinitfs/mkinitfs.conf
+        chroot /os mkinitfs -k "$(basename /os/lib/modules/*-*)"
     fi
 }
 
@@ -2018,6 +2088,7 @@ EOF
             keep_now_resolv_conf $os_dir
         fi
         chroot_apt_autoremove $os_dir
+        persist_tencent_disk_limit $os_dir
 
         chroot $os_dir apt-get clean
         rm $os_dir/etc/apt/reinstall.list
@@ -2527,6 +2598,8 @@ EOF
             chroot_apt_install $os_dir $fw_pkgs
         fi
 
+        persist_tencent_disk_limit $os_dir
+
         # 网络配置：18.04 起都是 netplan
         # 避免 minimal 镜像的 netplan.io 被 autoremove
         chroot $os_dir apt-mark manual netplan.io
@@ -2952,6 +3025,8 @@ trans() {
     if [ -z "$xda" ]; then
         find_xda
     fi
+
+    limit_tencent_disk_requests
 
     if [ "$distro" != "alpine" ]; then
         setup_web_if_enough_ram

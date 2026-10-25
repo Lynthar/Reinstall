@@ -21,6 +21,7 @@ on:
       - "tests/check_root_password.sh"
       - "tests/check_hostname.sh"
       - "tests/check_os_name.sh"
+      - "tests/check_vendor_quirks.sh"
       - "tests/lib.sh"
   pull_request:
     paths:
@@ -42,12 +43,13 @@ on:
       - "tests/check_root_password.sh"
       - "tests/check_hostname.sh"
       - "tests/check_os_name.sh"
+      - "tests/check_vendor_quirks.sh"
       - "tests/lib.sh"
 permissions:
   contents: read
 jobs:
   tests:
-    name: 分区角色、镜像验签、Debian 源、DD 管道与镜像预检、时间同步、选盘、网络配置、cloud-init 种子、引导项、失败路径、root 密码、主机名与目标版本
+    name: 分区角色、镜像验签、Debian 源、DD 管道与镜像预检、时间同步、选盘、网络配置、cloud-init 种子、引导项、失败路径、root 密码、主机名、目标版本与厂商特例
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,6 +73,7 @@ jobs:
       - run: bash tests/check_root_password.sh
       - run: bash tests/check_hostname.sh
       - run: bash tests/check_os_name.sh
+      - run: bash tests/check_vendor_quirks.sh
   run:
     name: 运行主程序
     runs-on: ubuntu-latest
