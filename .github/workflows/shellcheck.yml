@@ -22,33 +22,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
-        run: |
-          shellcheck reinstall.sh
-          shellcheck trans.sh
-          shellcheck initrd-network.sh
-          shellcheck fix-eth-name.sh
-          shellcheck fix-eth-name.initd
-          shellcheck tests/lib.sh
-          shellcheck tests/check_undefined_calls.sh
-          shellcheck tests/check_cmdline_contract.sh
-          shellcheck tests/check_ifupdown_config.sh
-          shellcheck tests/check_cloud_init_network.sh
-          shellcheck tests/check_cloud_init_seed.sh
-          shellcheck tests/check_part_layout.sh
-          shellcheck tests/check_qcow_verify.sh
-          shellcheck tests/check_debian_sources.sh
-          shellcheck tests/check_dd_pipeline.sh
-          shellcheck tests/check_dd_image.sh
-          shellcheck tests/check_sync_time.sh
-          shellcheck tests/check_find_xda.sh
-          shellcheck tests/check_boot_entry.sh
-          shellcheck tests/check_failure_paths.sh
-          shellcheck tests/check_root_password.sh
-          shellcheck tests/check_hostname.sh
-          shellcheck tests/check_os_name.sh
-          shellcheck tests/check_vendor_quirks.sh
-          shellcheck tests/check_host_tools.sh
-          shellcheck tests/check_mirrors.sh
+        run: shellcheck reinstall.sh trans.sh initrd-network.sh fix-eth-name.sh fix-eth-name.initd tests/*.sh
       - name: Check for calls to undefined functions
         run: |
           bash tests/check_undefined_calls.sh \

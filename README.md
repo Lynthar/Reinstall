@@ -15,7 +15,9 @@
 以及 `dd` 任意 raw 镜像（只收 `http(s)://`）。不写版本时装表里最新的一个，Ubuntu 则是最新的
 LTS（26.04）。Debian 与 Ubuntu 走官方云镜像。
 Debian 10 / 11 的官方支持已经结束，装好后用 Freexian 的 ELTS 源（`deb.freexian.com`），
-它的签名密钥指纹钉在脚本里。
+它的签名密钥指纹钉在脚本里。ELTS 只覆盖赞助方用到的那些包，Freexian 说尽量对个人免费，
+没有书面承诺；这两版的云镜像停在 2024-07 与 2026-08。Ubuntu 18.04 / 20.04 的标准支持
+已经结束，云镜像停在 2023-06 与 2025-06，装好后要接 Ubuntu Pro（ESM）才有安全更新。
 
 ## 安装
 
@@ -55,6 +57,8 @@ sudo bash reinstall.sh alpine 3.22
 sudo bash reinstall.sh dd --img "https://example.com/x.img.xz"
 ```
 
+Alpine 宿主默认没有 `sudo` 和 `bash`：以 root 直接 `sh reinstall.sh …` 就行，
+脚本会自己装上 bash。
 不写版本号就取该系列最新的一个。口令建议从 stdin 给，不要用 `--password`——
 后者会进 `ps` 和 history：
 
@@ -82,8 +86,9 @@ ssh -L 8080:127.0.0.1:80 root@your-server
 其它常用旗标：`--timezone`、`--ssh-port`、`--web-port`、`--no-web`、
 `--hold 1|2`（停在安装环境或装完不重启）、`--force-boot-mode bios|efi`、`-x` 调试、
 `--commit <SHA>` 钉住引导脚本的版本，`--hostname <名字>` 设主机名（dd 不收；不给时用镜像
-自带的，Debian 镜像没带就是 `debian`）。没有配置文件也没有环境变量，行为全部由旗标决定；
-DNS 写死在 `1.1.1.1` 与 `8.8.8.8`（IPv6 对应 Cloudflare 与 Google）。
+自带的，Debian 镜像没带就是 `debian`）。没有配置文件也没有环境变量，行为全部由旗标决定。
+DHCP 给了 DNS 就用 DHCP 的；静态网络的机器写成 `1.1.1.1` 与 `8.8.8.8`（IPv6 对应
+Cloudflare 与 Google），不沿用原系统的设置。
 
 静态 IP 的机器（没有 DHCP）上 dd 要当心：镜像照原样写进去，得自己带着这台机器的地址，
 否则重启后那一族网络起不来，全是静态的就连不上了。临时系统写盘前会在屏幕和日志里列出
@@ -165,6 +170,9 @@ IP 交给第三方服务，帮助信息里就这么写着）；口令用 `read -
   显式加了 `--cloud-init-network` 时写进去的网络种子。
   写盘前会核镜像开头分区表里最后一个分区装不装得下目标盘，装不下就退出；
   读不出分区表的镜像不核。
+- **Debian 要的盘比镜像本身大**：云镜像的整个虚拟盘（Debian 13 是 3 GiB）要和存放下载的
+  分区一起放得下，arm64 的 Debian 13 约要 3.5 GiB。放不下的话临时系统在擦盘之前退出，
+  重启回原系统。
 - **必须能自动探测到网络**（IPv4 或 IPv6 任一即可），拿不到就报错退出。
   纯 IPv6 的机器要带 `--commit <SHA>`：把分支解析成 commit 要访问 `api.github.com`，
   它没有 IPv6 地址。

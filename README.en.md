@@ -17,7 +17,12 @@ Alpine 3.22/3.23/3.24, and `dd` of any raw image (over `http(s)://` only). Witho
 version you get the newest one listed; for Ubuntu that is the newest LTS, 26.04.
 Debian and Ubuntu go through official cloud images. Debian 10 and 11 are past
 official support, so the installed system uses Freexian's ELTS repository
-(`deb.freexian.com`); its signing key fingerprint is pinned in the script.
+(`deb.freexian.com`); its signing key fingerprint is pinned in the script. ELTS
+covers only the packages its sponsors use, and Freexian aims to keep it free for
+individuals without a written promise; the cloud images of those two stop at
+2024-07 and 2026-08. Ubuntu 18.04 and 20.04 are past standard support, their cloud
+images stop at 2023-06 and 2025-06, and the installed system gets security updates
+only once you attach Ubuntu Pro (ESM).
 
 ## Install
 
@@ -60,6 +65,8 @@ sudo bash reinstall.sh alpine 3.22
 sudo bash reinstall.sh dd --img "https://example.com/x.img.xz"
 ```
 
+An Alpine host has neither `sudo` nor `bash` by default: as root, `sh reinstall.sh …`
+works, and the script installs bash itself.
 Leaving the version off picks the newest in that series. Prefer stdin for the
 password — `--password` lands in `ps` and history:
 
@@ -94,8 +101,9 @@ Other flags you'll reach for: `--timezone`, `--ssh-port`, `--web-port`,
 the end), `--force-boot-mode bios|efi`, `-x` for debugging, `--commit <SHA>`
 to pin the bootstrap scripts, and `--hostname <name>` (not with dd; without it you
 get the image's own name, or `debian` when a Debian image has none). There's no
-config file and no environment variables — everything is a flag. DNS is hardcoded
-to `1.1.1.1` and `8.8.8.8`, with Cloudflare and Google for IPv6.
+config file and no environment variables — everything is a flag. DNS comes from
+DHCP when the network hands it out; on a static network it is set to `1.1.1.1` and
+`8.8.8.8` (Cloudflare and Google for IPv6), not carried over from the old system.
 
 Take care with `dd` on a machine with a static IP (no DHCP): the image goes on as
 it is, so it has to carry this machine's addresses itself, or that address family
@@ -211,6 +219,10 @@ both the log and the web output.
   checks that the last partition in the image's partition table ends inside the
   target disk, and stops if it doesn't. An image whose partition table it cannot read is not
   checked.
+- **Debian needs more disk than the image itself**: the cloud image's whole virtual disk
+  (3 GiB for Debian 13) has to fit together with the partition the download goes into,
+  about 3.5 GiB for Debian 13 on arm64. If it doesn't, the temporary system stops before
+  wiping anything and a reboot goes back to the current system.
 - **Network has to be auto-detectable** (IPv4 or IPv6 will do); if it can't work
   out an address, it exits. An IPv6-only host needs `--commit <SHA>`: resolving the
   branch to a commit goes through `api.github.com`, which has no IPv6 address.

@@ -1310,6 +1310,12 @@ install_alpine() {
         chroot /os grub-install --target=i386-pc /dev/$xda
     fi
 
+    # setup-disk 见到串口控制台就配 x86 的 com 口：arm64 的 EFI grub 认不出 --unit，每次开机报三行错。
+    # 只留 EFI 文本控制台，固件把它转到串口上；三行全删的话 grub 默认用 gfxterm，有显卡时菜单只画在屏幕上
+    if [ "$(uname -m)" = aarch64 ]; then
+        sed -i '/^GRUB_SERIAL_COMMAND=/d; /^GRUB_TERMINAL_.*PUT=/s/"console serial"/"console"/' /os/etc/default/grub
+    fi
+
     # efi grub 添加 fwsetup 条目
     chroot /os update-grub
 
@@ -1675,7 +1681,7 @@ create_part() {
     # xda*1 星号用于 nvme0n1p1 的字母 p
     # shellcheck disable=SC2154
     if is_use_cloud_image; then
-        installer_part_size="$(get_cloud_image_part_size)"
+        installer_part_size="$(get_cloud_image_part_size)MiB"
         if [ "$distro" = ubuntu ]; then
             # install_qcow_by_copy 写死 1=efi 2=os 3=installer
             # 三种固件/容量下编号必须一致，所以一律 gpt，且 os 分区留给目标系统自己的 mkfs
@@ -2462,22 +2468,57 @@ get_part_size_mb_for_file_size_b() {
     echo $part_mb
 }
 
+# 单位 MiB
 get_cloud_image_part_size() {
     # https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2 500m
     # https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img 500m
     if size_bytes=$(get_http_file_size "$img"); then
-        echo "$(get_part_size_mb_for_file_size_b $size_bytes)MiB"
+        get_part_size_mb_for_file_size_b $size_bytes
     else
         # 如果没获取到文件大小
         echo "Could not get cloud image size in http response." >&2
-        echo 2GiB
+        echo 2048
+    fi
+}
+
+# qcow2 头以 QFI\xfb 开头，第 24 字节起的 8 字节（大端）是虚拟盘大小；取不到或不是 qcow2 就返回 1。
+# 不发 Range（busybox wget 把 206 当错误），head 读够就关管道、wget 随之退出；所以也不能经带
+# retry 的 wget 包装，它会把这次退出当失败重下
+get_qcow_virtual_size() {
+    command wget -qO- -T 10 "$1" | head -c 32 | od -An -tu1 -v |
+        awk '{ for (i = 1; i <= NF; i++) b[n++] = $i }
+            END {
+                if (n < 32 || b[0] != 81 || b[1] != 70 || b[2] != 73 || b[3] != 251)
+                    exit 1
+                for (i = 24; i < 32; i++)
+                    s = s * 256 + b[i]
+                printf "%.0f\n", s
+            }'
+}
+
+# dd_qcow 从 1 MiB 起把整个虚拟盘写上盘，写过盘尾 installer 分区的起点就会写坏正在读的 qcow，
+# 装出一个尾部是乱码的系统。所以擦盘之前核：放不下就停在这里，重启还能回原系统
+check_qcow_fits_disk() {
+    local virtual installer_mb disk_size need
+    if ! virtual=$(get_qcow_virtual_size "$img"); then
+        warn "Could not read the image's virtual size; not checking whether it fits /dev/$xda."
+        return
+    fi
+    installer_mb=$(get_cloud_image_part_size)
+    disk_size=$(get_disk_size /dev/$xda)
+    # 前面的 1 MiB，加 1 MiB 给 parted 的对齐与 GPT 备份
+    need=$((virtual + (installer_mb + 2) * 1024 * 1024))
+    echo "The image is a $((virtual / 1024 / 1024)) MiB disk, downloaded into a $installer_mb MiB partition: $need of $disk_size bytes on /dev/$xda."
+    if [ "$need" -gt "$disk_size" ]; then
+        error_and_exit "/dev/$xda is too small for $distro $releasever: it needs $need bytes and has $disk_size. Install alpine instead, or use a bigger disk."
     fi
 }
 
 chroot_apt_update() {
     os_dir=$1
 
-    current_hash=$(cat $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/*.sources 2>/dev/null | md5sum)
+    # 安装 debian 期间 apt 读的是 reinstall.list（见 apt_opts），它也得算进来
+    current_hash=$(cat $os_dir/etc/apt/reinstall.list $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/*.sources 2>/dev/null | md5sum)
     if ! [ "$saved_hash" = "$current_hash" ]; then
         chroot $os_dir apt-get $apt_opts update
         saved_hash="$current_hash"
@@ -3073,6 +3114,7 @@ trans() {
         fetch_qcow_hash
         step sources "check the Debian apt sources"
         prepare_debian_sources
+        check_qcow_fits_disk
         step partition "partition the disk"
         create_part
         step download "download the image"

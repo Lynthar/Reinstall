@@ -6,52 +6,18 @@ on:
       - "reinstall.sh"
       - "trans.sh"
       - ".github/workflows/run_reinstall.yml"
-      - "tests/check_part_layout.sh"
-      - "tests/check_qcow_verify.sh"
-      - "tests/check_debian_sources.sh"
-      - "tests/check_dd_pipeline.sh"
-      - "tests/check_dd_image.sh"
-      - "tests/check_sync_time.sh"
-      - "tests/check_find_xda.sh"
-      - "tests/check_ifupdown_config.sh"
-      - "tests/check_cloud_init_network.sh"
-      - "tests/check_cloud_init_seed.sh"
-      - "tests/check_boot_entry.sh"
-      - "tests/check_failure_paths.sh"
-      - "tests/check_root_password.sh"
-      - "tests/check_hostname.sh"
-      - "tests/check_os_name.sh"
-      - "tests/check_vendor_quirks.sh"
-      - "tests/check_host_tools.sh"
-      - "tests/lib.sh"
+      - "tests/*.sh"
   pull_request:
     paths:
       - "reinstall.sh"
       - "trans.sh"
       - ".github/workflows/run_reinstall.yml"
-      - "tests/check_part_layout.sh"
-      - "tests/check_qcow_verify.sh"
-      - "tests/check_debian_sources.sh"
-      - "tests/check_dd_pipeline.sh"
-      - "tests/check_dd_image.sh"
-      - "tests/check_sync_time.sh"
-      - "tests/check_find_xda.sh"
-      - "tests/check_ifupdown_config.sh"
-      - "tests/check_cloud_init_network.sh"
-      - "tests/check_cloud_init_seed.sh"
-      - "tests/check_boot_entry.sh"
-      - "tests/check_failure_paths.sh"
-      - "tests/check_root_password.sh"
-      - "tests/check_hostname.sh"
-      - "tests/check_os_name.sh"
-      - "tests/check_vendor_quirks.sh"
-      - "tests/check_host_tools.sh"
-      - "tests/lib.sh"
+      - "tests/*.sh"
 permissions:
   contents: read
 jobs:
   tests:
-    name: 分区角色、镜像验签、Debian 源、DD 管道与镜像预检、时间同步、选盘、网络配置、cloud-init 种子、引导项、失败路径、root 密码、主机名、目标版本、厂商特例与宿主工具
+    name: 分区角色、镜像验签、Debian 源、DD 管道与镜像预检、Debian 镜像的盘大小、时间同步、选盘、网络配置、cloud-init 种子、引导项、失败路径、root 密码、主机名、目标版本、厂商特例与宿主工具
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,6 +27,7 @@ jobs:
       - run: bash tests/check_debian_sources.sh
       - run: bash tests/check_dd_pipeline.sh
       - run: bash tests/check_dd_image.sh
+      - run: bash tests/check_qcow_fits_disk.sh
       - run: bash tests/check_sync_time.sh
       - run: bash tests/check_find_xda.sh
       - run: bash tests/check_ifupdown_config.sh

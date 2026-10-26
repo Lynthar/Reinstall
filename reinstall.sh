@@ -847,11 +847,6 @@ Continue with DD?'
     fi
 }
 
-get_latest_distro_releasever() {
-    get_function_content verify_os_name |
-        grep -wo "$1 [^'\"]*" | awk -F'|' '{print $NF}'
-}
-
 # 检查是否为正确的系统名
 verify_os_name() {
     if [ -z "$*" ]; then
@@ -1703,12 +1698,9 @@ get_grub_efi_filename() {
 install_grub_linux_efi() {
     info 'download grub efi'
 
-    # fedora 39 的 efi 无法识别 opensuse tumbleweed 的 xfs
-    efi_distro=opensuse
-
     grub_efi=$(get_grub_efi_filename)
 
-    # 不要用 download.opensuse.org 和 download.fedoraproject.org
+    # 不要用 download.opensuse.org
     # 因为 ipv6 访问有时跳转到 ipv4 地址，造成 ipv6 only 机器无法下载
     # 日韩机器有时得到国内镜像源，但镜像源屏蔽了国外 IP 导致连不上
     # https://mirrors.bfsu.edu.cn/opensuse/ports/aarch64/tumbleweed/repo/oss/EFI/BOOT/grub.efi
@@ -1717,22 +1709,11 @@ install_grub_linux_efi() {
     # https://mirror.fcix.net/opensuse/tumbleweed/repo/oss/EFI/BOOT/bootx64.efi
     # https://mirror.fcix.net/opensuse/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2
 
-    # dl.fedoraproject.org 不支持 ipv6
+    mirror=https://downloadcontentcdn.opensuse.org
 
-    if [ "$efi_distro" = fedora ]; then
-        # fedora 43 efi 在 vultr 无法引导 debain 9/10 netboot
-        fedora_ver=$(get_latest_distro_releasever fedora)
+    [ "$basearch" = x86_64 ] && ports='' || ports=/ports/$basearch
 
-        mirror=https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux
-
-        curl -Lo $tmp/$grub_efi $mirror/releases/$fedora_ver/Everything/$basearch/os/EFI/BOOT/$grub_efi
-    else
-        mirror=https://downloadcontentcdn.opensuse.org
-
-        [ "$basearch" = x86_64 ] && ports='' || ports=/ports/$basearch
-
-        curl -Lo $tmp/$grub_efi $mirror$ports/tumbleweed/repo/oss/EFI/BOOT/grub.efi
-    fi
+    curl -Lo $tmp/$grub_efi $mirror$ports/tumbleweed/repo/oss/EFI/BOOT/grub.efi
 
     add_efi_entry_in_linux $tmp/$grub_efi
 }
@@ -2688,7 +2669,7 @@ for o in ci debug minimal help detect-timezone password-stdin web-public no-web 
 done
 
 # 整理参数
-if ! opts=$(getopt -n $0 -o "h,x" --long "$long_opts" -- "$@"); then
+if ! opts=$(getopt -n $0 -o "hx" --long "$long_opts" -- "$@"); then
     exit 1
 fi
 
@@ -3037,6 +3018,15 @@ rm -rf "$tmp"
 
 info 'info'
 echo "$distro $releasever"
+# 过了标准支持的版本装出来不会自己补上安全更新，要在重启之前说
+case "$distro $releasever" in
+'ubuntu 18.04' | 'ubuntu 20.04')
+    echo "Ubuntu $releasever is past standard support: it gets security updates only through Ubuntu Pro (ESM)."
+    ;;
+'debian 10' | 'debian 11')
+    echo "Debian $releasever is past official support: security updates come from Freexian's ELTS, which covers only the packages its sponsors use."
+    ;;
+esac
 
 echo "Username: root"
 if [ -n "$ssh_keys" ]; then
