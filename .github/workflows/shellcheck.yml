@@ -47,6 +47,7 @@ jobs:
           shellcheck tests/check_hostname.sh
           shellcheck tests/check_os_name.sh
           shellcheck tests/check_vendor_quirks.sh
+          shellcheck tests/check_host_tools.sh
           shellcheck tests/check_mirrors.sh
       - name: Check for calls to undefined functions
         run: |

@@ -85,11 +85,14 @@ $url"
     fi
 }
 
-echo '=== Alpine (virt kernel; reinstall only runs in VMs) ==='
+# virt on a VM, lts where is_virt says no
+echo '=== Alpine netboot ==='
 for v in $alpine_versions; do
     for arch in x86_64 aarch64; do
-        probe "http://dl-cdn.alpinelinux.org/alpine/v$v/releases/$arch/netboot/vmlinuz-virt"
-        probe "http://dl-cdn.alpinelinux.org/alpine/v$v/releases/$arch/netboot/initramfs-virt"
+        for flavour in virt lts; do
+            probe "http://dl-cdn.alpinelinux.org/alpine/v$v/releases/$arch/netboot/vmlinuz-$flavour"
+            probe "http://dl-cdn.alpinelinux.org/alpine/v$v/releases/$arch/netboot/initramfs-$flavour"
+        done
     done
 done
 

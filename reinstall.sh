@@ -821,7 +821,8 @@ setos() {
                 warn '
 The current machine uses EFI boot, but the DD image seems not an EFI image.
 Continue with DD?'
-                read -r -p '[y/N]: '
+                # stdin 读完了（--password-stdin 的管道）read 就失败，不说一句的话 ERR 陷阱只报个行号
+                read -r -p '[y/N]: ' || error_and_exit "Nothing on stdin to answer the question above. Run it in a terminal."
                 if [[ "$REPLY" = [Yy] ]]; then
                     eval ${step}_confirmed_no_efi=1
                 else
@@ -1099,11 +1100,12 @@ install_pkg() {
             return 0
         fi
 
-        # busybox fdisk 无法显示 mbr 分区表的 id，grep 不支持 -oP，
-        # tar 不认 GNU 的稀疏格式（Debian 的 tar.xz 镜像），解出来是空的
+        # busybox fdisk 无法显示 mbr 分区表的 id，grep 不支持 -oP，lsblk（1.38 起）只认 -a，
+        # tar 不认 GNU 的稀疏格式（Debian 的 tar.xz 镜像），解出来是空的。
+        # 看 --help：busybox 的 lsblk 不带参数就列设备，不打带 BusyBox 字样的用法
         case "$cmd" in
-        fdisk | grep | tar)
-            if is_have_cmd apk && $cmd |& grep -wq BusyBox; then
+        fdisk | grep | lsblk | tar)
+            if is_have_cmd apk && $cmd --help |& grep -wq BusyBox; then
                 return 0
             fi
             ;;
@@ -1228,7 +1230,26 @@ del_comment_lines() {
     sed '/^[[:space:]]*#/d'
 }
 
+# 经手口令的函数经它调用：-x 的跟踪打的是展开后的值，那几行不含 password 一词，日志的过滤拦不住
+without_xtrace() {
+    case $- in
+    *x*)
+        { set +x; } 2>/dev/null
+        "$@"
+        set -x
+        ;;
+    *) "$@" ;;
+    esac
+}
+
+# 没给 --password / --password-stdin 时问一个，留空则生成随机密码
 prompt_password() {
+    if [ -n "$password" ]; then
+        return
+    fi
+    if is_use_dd; then
+        show_dd_password_tips
+    fi
     info "prompt password"
     warn false "Leave blank to use a random password."
     while true; do
@@ -1271,7 +1292,7 @@ save_password() {
     # echo "$password"  # 空白
 
     # 不保存明文密码：alpine live 镜像可能被打包/分享，--password 也会进 history
-    # /reinstall.log 中的明文已被 grep -iv password 过滤
+    # /reinstall.log 里没有明文：输出经 grep -iv password 过滤，-x 的跟踪由 without_xtrace 关掉
 
     # sha512
     # 以下系统均支持 sha512 密码，但是生成密码需要不同的工具
@@ -1518,7 +1539,6 @@ collect_netconf() {
         for v in 4 6; do
             if via_gateway_dev_ethx=$(ip -$v route show default | grep -Ewo 'via [^ ]+ dev [^ ]+' | head -1 | grep .); then
                 read -r _ gateway _ ethx <<<"$via_gateway_dev_ethx"
-                eval ipv${v}_ethx="$ethx" # can_use_cloud_kernel 要用
                 eval ipv${v}_mac="$(ip link show dev $ethx | grep link/ether | head -1 | awk '{print $2}')"
                 eval ipv${v}_gateway="$gateway"
                 addrs=$(ip -$v -o addr show scope global dev $ethx | grep -v temporary | awk '{print $4}')
@@ -2320,9 +2340,8 @@ mkdir_clear() {
     mkdir -p "$dir"
 }
 
+# 用主流程里 collect_netconf 探到的地址
 get_ip_conf_cmd() {
-    collect_netconf >&2
-
     sh=/initrd-network.sh
     if is_found_ipv4_netconf && is_found_ipv6_netconf && [ "$ipv4_mac" = "$ipv6_mac" ]; then
         echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway'"
@@ -2504,7 +2523,7 @@ This script is outdated, please download reinstall.sh again."
     if [ -n "$ssh_keys" ]; then
         cat <<<"$ssh_keys" >$initrd_dir/configs/ssh_keys
     else
-        save_password $initrd_dir/configs
+        without_xtrace save_password $initrd_dir/configs
     fi
 
     # nextos 只可能是 alpine
@@ -2708,7 +2727,7 @@ while true; do
         shift
         ;;
     -x | --debug)
-        set -x
+        xtrace=1
         shift
         ;;
     --ci)
@@ -2859,6 +2878,9 @@ EOF
     esac
 done
 
+# 解析完参数才开跟踪：解析 --password 的那几行会把口令原样打进日志
+[ -z "$xtrace" ] || set -x
+
 # 反悔：重启之前撤销上次运行对宿主的改动。不联网，其余参数一概不看
 if [ "$*" = reset ]; then
     undo_boot_changes
@@ -2881,11 +2903,8 @@ if is_secure_boot_enabled; then
 fi
 
 # 密码
-if [ -z "$ssh_keys" ] && [ -z "$password" ]; then
-    if is_use_dd; then
-        show_dd_password_tips
-    fi
-    prompt_password
+if [ -z "$ssh_keys" ]; then
+    without_xtrace prompt_password
 fi
 
 # 必备组件
@@ -2980,8 +2999,9 @@ dd | debian | ubuntu)
     ;;
 esac
 
-# 选盘与内核命令行在动引导项之前定下：系统横跨多盘时在这里就退出
+# 选盘、网络与内核命令行在动引导项、下内核之前定下：系统横跨多盘、探不到网络时在这里就退出
 find_main_disk
+collect_netconf
 build_cmdline
 
 if [ "$(get_boot_path)" = linux_grub ]; then

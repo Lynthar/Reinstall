@@ -169,7 +169,8 @@ IP 交给第三方服务，帮助信息里就这么写着）；口令用 `read -
   纯 IPv6 的机器要带 `--commit <SHA>`：把分支解析成 commit 要访问 `api.github.com`，
   它没有 IPv6 地址。
 - **`--minimal` 只对 Ubuntu 有效**，对 Debian 是静默无效的。
-- **EFI 机器上 DD 一个非 EFI 镜像会弹二次确认**，非交互场景下会卡住。
+- **EFI 机器上 DD 一个非 EFI 镜像会弹二次确认**，从 stdin 读一行 `y`：stdin 已读完
+  （如 `--password-stdin` 的管道）就报错退出，开着却没人输入就一直等。
 - **`--commit` 只收 40 位 SHA，不收 tag 名。** 仓库打了 tag（如 `v0.1.0`），
   要钉它就用它指向的 SHA。
 

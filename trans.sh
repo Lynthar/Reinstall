@@ -1591,7 +1591,6 @@ find_cloud_init_root() {
 # 文件才认 NoCloud；cidata 盘上的后读，带 network-config 就整份顶掉这里的
 write_cloud_init_seed() {
     local part fstype root='' unsupported='' seed dir cidata
-    update_part
     mkdir -p /os
     for part in $(lsblk -lnpo NAME /dev/$xda); do
         fstype=$(lsblk -dno FSTYPE "$part")
@@ -3062,6 +3061,8 @@ trans() {
         # 内核还认着写盘前的分区表，不重读的话，后面找 ESP、清 NVRAM 条目看到的都是旧盘。
         # partx -u 碰上 mdev 正在探的分区会悄悄跳过，所以整盘重读；也会偶尔撞上，要重试
         retry 5 1 blockdev --rereadpt /dev/$xda
+        # 重读引出的 remove / add 由并发的 mdev 处理，新分区的 /dev 节点常被删掉：挂不上，HOLD 2 里也看不了
+        update_part
         if [ "$cloud_init_network" = 1 ]; then
             step network "write the network config into the image's cloud-init seed"
             write_cloud_init_seed

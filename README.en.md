@@ -215,8 +215,9 @@ both the log and the web output.
   out an address, it exits. An IPv6-only host needs `--commit <SHA>`: resolving the
   branch to a commit goes through `api.github.com`, which has no IPv6 address.
 - **`--minimal` only affects Ubuntu**, and is silently ignored for Debian.
-- **DD-ing a non-EFI image on an EFI machine asks for confirmation**, which will
-  hang an unattended run.
+- **DD-ing a non-EFI image on an EFI machine asks for confirmation**: a `y` line
+  on stdin. With stdin already used up (the `--password-stdin` pipe, say) it exits;
+  with stdin open and nobody typing it waits.
 - **`--commit` takes a 40-hex SHA, not a tag name.** The repository has tags
   (`v0.1.0`, for one); to pin a tag, pass the SHA it points to.
 

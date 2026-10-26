@@ -31,7 +31,6 @@ error_and_exit() {
     printf '%s\n' "\$*" >"$work/reason"
     exit 1
 }
-update_part() { :; }
 create_cloud_init_network_v2() { echo "stub network-config" >"\$1"; }
 STUBS
 for fn in is_have_cmd_on_disk find_cloud_init_root write_cloud_init_seed; do

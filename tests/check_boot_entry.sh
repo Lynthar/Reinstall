@@ -47,6 +47,10 @@ check "functions that arm" "$armed" \
 
 # Every function of reinstall.sh and none of its top-level code.
 label_lines | awk -F'\t' '$1 != ""' | cut -f3- >"$work/fns.sh"
+# The entry name as get_entry_name makes it. The stubs list it back, so the undo cases go red
+# once its format drifts from the patterns undo looks for.
+# shellcheck disable=SC2016 # expands in the inner bash
+name=$(distro=debian releasever=13 hold='' bash -c '. "$1" && get_entry_name' _ "$work/fns.sh")
 
 # Stubs log their arguments to $work/calls. PATH holds nothing else besides the plain
 # tools linked below, so no real bootloader tool on this machine is ever reached.
@@ -68,7 +72,7 @@ STUB
 stub curl 'while [ $# -gt 0 ]; do [ "$1" = -Lo ] && echo efi >"$2"; shift; done'
 # Without arguments it lists $work/efi_list, the NVRAM state a case sets up.
 stub efibootmgr "[ \$# -eq 0 ] && cat '$work/efi_list' 2>/dev/null
-case \" \$* \" in *' --create-only '*) printf '%s\n' 'Boot0002* debian' 'Boot0003* reinstall (debian 13)' ;; esac
+case \" \$* \" in *' --create-only '*) printf '%s\n' 'Boot0002* debian' 'Boot0003* $name' ;; esac
 exit 0"
 stub findmnt 'echo /dev/vda15'
 stub lsblk 'printf "%s\n" "vda15 252:15 0 124M 0 part" "vda 252:0 0 10G 0 disk"'
@@ -107,7 +111,7 @@ exec $(command -v rm) \"\$@\""
 stub bcdedit 'case "$*" in
 "/enum bootmgr") printf "%s\n" "Windows Boot Manager" "identifier {bootmgr}" "" \
     "Firmware Application (101fffff)" "identifier {2b7f5d3a-0000-4000-8000-000000000001}" \
-    "description reinstall (debian 13)" ;;
+    "description '"$name"'" ;;
 "/enum all") printf "%s\n" "identifier {1c41f649-1637-52f1-aea8-f96bfebeecc8}" ;;
 esac'
 stub cmd
@@ -165,7 +169,7 @@ same_tree() {
     fi
 }
 
-entry='menuentry "reinstall (debian 13)" --unrestricted {'
+entry="menuentry \"$name\" --unrestricted {"
 kernel='    linux /reinstall-vmlinuz alpine_repo=r modloop=m extra_main_disk=d'
 custom=$root/boot/grub/custom.cfg
 conf=$root/boot/extlinux/extlinux.conf
@@ -182,7 +186,7 @@ check "grub.cfg kernel line" "$(has_line "$root/efi/EFI/reinstall/grub.cfg" "$ke
 check "last call" "$(tail -n1 "$work/calls")" "efibootmgr --bootnext 0003"
 
 echo "== linux efi, undo =="
-printf '%s\n' 'BootNext: 0003' 'Boot0002* debian' 'Boot0003* reinstall (debian 13)' >"$work/efi_list"
+printf '%s\n' 'BootNext: 0003' 'Boot0002* debian' "Boot0003* $name" >"$work/efi_list"
 run efi '' undo_boot_changes
 check "exit status" "$status" 0
 check "tree as before" "$(same_tree "$before")" yes
@@ -192,7 +196,7 @@ check "other entry kept" "$(called 'bootnum 0002')" no
 check "kernel files removed" "$(called 'rm -f /reinstall-vmlinuz /reinstall-initrd')" yes
 
 echo "== linux efi, undo keeps a BootNext someone else set =="
-printf '%s\n' 'BootNext: 0002' 'Boot0002* debian' 'Boot0003* reinstall (debian 13)' >"$work/efi_list"
+printf '%s\n' 'BootNext: 0002' 'Boot0002* debian' "Boot0003* $name" >"$work/efi_list"
 : >"$work/calls"
 run efi '' undo_boot_changes
 check "exit status" "$status" 0
@@ -216,7 +220,7 @@ check "exit status" "$status" 0
 check "custom.cfg menu entry" "$(has_line "$custom" "$entry")" yes
 check "the user's custom.cfg line kept" "$(has_line "$custom" 'set user_setting=1')" yes
 check "grub.cfg regenerated" "$(called update-grub)" yes
-check "armed last" "$(tail -n2 "$work/calls" | head -n1)" "grub-reboot reinstall (debian 13)"
+check "armed last" "$(tail -n2 "$work/calls" | head -n1)" "grub-reboot $name"
 check "next_entry read back" "$(tail -n1 "$work/calls")" "grub-editenv - list"
 
 echo "== linux bios, grub, undo =="
