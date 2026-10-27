@@ -97,13 +97,16 @@ the cause over SSH and run `/trans.sh` again. The scene is packed into
 it before you share it.
 
 Other flags you'll reach for: `--timezone`, `--ssh-port`, `--web-port`,
-`--no-web`, `--hold 1|2` (stop in the installer environment, or don't reboot at
-the end), `--force-boot-mode bios|efi`, `-x` for debugging, `--commit <SHA>`
+`--no-web`, `--hold 0|1|2` (0 pauses before the installer environment is packed so
+you can edit its files, 1 stops in it, 2 doesn't reboot at the end),
+`--force-boot-mode bios|efi`, `-x` for debugging, `--commit <SHA>`
 to pin the bootstrap scripts, and `--hostname <name>` (not with dd; without it you
 get the image's own name, or `debian` when a Debian image has none). There's no
 config file and no environment variables — everything is a flag. DNS comes from
 DHCP when the network hands it out; on a static network it is set to `1.1.1.1` and
 `8.8.8.8` (Cloudflare and Google for IPv6), not carried over from the old system.
+The installer environment also swaps in those two when DHCP's servers can't resolve,
+but an installed system on DHCP still uses whatever DHCP hands out.
 
 Take care with `dd` on a machine with a static IP (no DHCP): the image goes on as
 it is, so it has to carry this machine's addresses itself, or that address family

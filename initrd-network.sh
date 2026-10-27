@@ -15,17 +15,14 @@ DHCP_TIMEOUT=15
 DNS_FILE_TIMEOUT=5
 TEST_TIMEOUT=10
 
-# 检测是否有网络是通过检测这些 IP 的端口是否开放
-# 因为 debian initrd 没有 nslookup
-# 改成 generate_204？但检测网络时可能 resolv.conf 为空
-# HTTP 80
-# HTTPS/DOH 443
-# DOT 853
-# 固定使用国际 DNS 服务器
+# 联通测试连这几个地址的 443，不经 DNS：测的时候 resolv.conf 可能还是空的，DHCP 给的也未必能用。
+# DHCP 没给 DNS、或给的解析不了时，补的也是这几个
 ipv4_dns1='1.1.1.1'
 ipv4_dns2='8.8.8.8' # 不开放 80
 ipv6_dns1='2606:4700:4700::1111'
 ipv6_dns2='2001:4860:4860::8888' # 不开放 80
+# 拿来试 DNS 的主机名：init 接下来就从它取 modloop 与软件仓库（reinstall.sh 的 setos_alpine），不多向谁发查询
+dns_test_host=dl-cdn.alpinelinux.org
 
 # 找到主网卡
 # debian 11 initrd 没有 xargs awk
@@ -354,6 +351,19 @@ if ! $ipv6_has_internet; then
     flush_ipv6_config
 fi
 
+# DHCP 给的 DNS 可能解析不了，而联通测试只连字面 IP，测不出来；留着它，init 就取不到 modloop。
+# 逐个拿 dns_test_host 试，解析不了的删掉；哪一族删空了，由 add_missing_dns 补上我们的
+drop_dead_dns() {
+    servers=$(grep -s '^nameserver' /etc/resolv.conf | cut -d' ' -f2)
+    for dns in $servers; do
+        if ! nslookup "$dns_test_host" "$dns" >/dev/null 2>&1; then
+            echo "DNS server $dns cannot resolve $dns_test_host. Dropping it."
+            awk -v line="nameserver $dns" '$0 != line' /etc/resolv.conf >/etc/resolv.conf.new
+            mv /etc/resolv.conf.new /etc/resolv.conf
+        fi
+    done
+}
+
 # 联网了却没拿到 DNS 时补我们的。不看本网卡是否联网：多网卡时不能上网的那块后跑完，flush 会连带删掉
 # 能上网那块补的 v4 解析器，得在这里补回来。只补整机有默认路由的那一族：纯 IPv6 时补上的 v4 解析器
 # 排在前面，而 musl、glibc 只读前三条 nameserver
@@ -368,6 +378,7 @@ add_missing_dns() {
     fi
 }
 
+drop_dead_dns
 add_missing_dns
 
 # 传参给 trans.start

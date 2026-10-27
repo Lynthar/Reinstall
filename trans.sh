@@ -1045,6 +1045,11 @@ EOF
         # ipv4
         if is_dhcpv4; then
             echo "iface $ethx inet dhcp" >>$conf_file
+            # alpine 的 inet dhcp 起的是 dhcpcd，它默认也管 v6：自己发 RS、做 SLAAC，下面关 RA 的 pre-up 挡不住它。
+            # 要关 RA 时只让它管 v4。3.22 / 3.23 的 ifupdown-ng 不把 dhcp-opts 交给 dhcpcd，那两版照旧
+            if [ "$distro" = alpine ] && { should_disable_accept_ra || should_disable_autoconf; }; then
+                echo "    dhcp-opts -4" >>$conf_file
+            fi
 
         elif is_staticv4; then
             get_netconf_to ipv4_addr

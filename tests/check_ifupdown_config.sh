@@ -2,8 +2,8 @@
 # Runs create_ifupdown_config from trans.sh on stubbed probe results: /dev/netconf as
 # initrd-network.sh leaves it, an rdisc6 answer and resolv.conf. The file it writes is
 # the only network config alpine and debian 10 / 11 get, so a wrong stanza means no network.
-# Also runs initrd-network.sh's add_missing_dns, which fills that resolv.conf: the
-# resolvers it adds are the ones the static stanzas and debian's resolv.conf carry.
+# Also runs initrd-network.sh's drop_dead_dns and add_missing_dns, which settle that
+# resolv.conf: what they keep or add is what the static stanzas and debian's resolv.conf carry.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -156,6 +156,29 @@ iface eth0 inet dhcp
 iface eth0 inet6 manual
     accept_ra 0
     autoconf 0"
+    # alpine's inet dhcp runs dhcpcd, which does SLAAC itself unless told -4
+    expect "alpine with ra off keeps dhcpcd to ipv4" "$shell" alpine 3.24 "
+# mac 52:54:00:12:34:56
+auto eth0
+iface eth0 inet dhcp
+    dhcp-opts -4
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/accept_ra
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/autoconf"
+
+    netconf dhcpv4=1 dhcpv6_or_slaac=1 ipv4_has_internet=1 ipv6_has_internet=1 \
+        should_disable_accept_ra=1 should_disable_autoconf=1 ipv6_addr=2001:db8::10/64 ipv6_gateway=2001:db8::1
+    ra Yes No No
+    expect "alpine with ra off and a static ipv6 keeps dhcpcd to ipv4" "$shell" alpine 3.24 "
+# mac 52:54:00:12:34:56
+auto eth0
+iface eth0 inet dhcp
+    dhcp-opts -4
+iface eth0 inet6 static
+    address 2001:db8::10/64
+    gateway 2001:db8::1
+    dns-nameserver 2606:4700:4700::1111
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/accept_ra
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/\$IFACE/autoconf"
 
     netconf dhcpv4=1 dhcpv6_or_slaac=1 ipv6_has_internet=1
     ra Yes No No 2606:4700:4700::1111
@@ -165,7 +188,14 @@ auto eth0
 iface eth0 inet6 auto"
 done
 
-# add_missing_dns, with ip answering "is there a default route" per family from $routes.
+# drop_dead_dns then add_missing_dns, as initrd-network.sh runs them. ip answers "is there a
+# default route" per family from $routes; nslookup answers only for the host setos_alpine
+# fetches the modloop from, and never from a server listed in $DEAD_DNS.
+mirror_host=$(extract_fn "$repo/reinstall.sh" setos_alpine | sed -n 's,^ *mirror=\([^/]*\)/.*,\1,p')
+[ -n "$mirror_host" ] || {
+    echo "no mirror= in setos_alpine()" >&2
+    exit 2
+}
 cat >"$work/dns_stubs.sh" <<STUBS
 ip() {
     case "\$*" in
@@ -173,11 +203,15 @@ ip() {
     "-6 route show default") case "\$routes" in *6*) echo "default via fe80::1 dev eth0" ;; esac ;;
     esac
 }
+nslookup() {
+    [ "\$1" = "$mirror_host" ] || return 1
+    case " \$DEAD_DNS " in *" \$2 "*) return 1 ;; esac
+}
 STUBS
 initrd=$repo/initrd-network.sh
 {
-    grep -E '^ipv[46]_dns[12]=' "$initrd"
-    for fn in is_have_ipv4_dns is_have_ipv6_dns add_missing_dns; do
+    grep -E '^(ipv[46]_dns[12]|dns_test_host)=' "$initrd"
+    for fn in is_have_ipv4_dns is_have_ipv6_dns drop_dead_dns add_missing_dns; do
         extract_fn "$initrd" "$fn"
     done
 } | sed "s|/etc/resolv.conf|$work/resolv.conf|g" >"$work/dns_fns.sh"
@@ -186,16 +220,18 @@ set -eE
 . "$work/dns_stubs.sh"
 . "$work/dns_fns.sh"
 routes=\$1
+DEAD_DNS=\$2
+drop_dead_dns >/dev/null
 add_missing_dns
 CASE
 
-# dns <label> <shell> <families with a default route> <resolv.conf before> <after>
+# dns <label> <shell> <families with a default route> <resolv.conf before> <after> [dead servers]
 dns() {
     local want got
     printf '%s\n' "$4" | sed '/^$/d' >"$work/resolv.conf"
     want=$(sed '/^$/d' <<<"$5" | paste -sd'|' - | sed 's/|/ | /g')
     # shellcheck disable=SC2086
-    if $2 "$work/dns_case.sh" "$3" 2>"$work/log"; then
+    if $2 "$work/dns_case.sh" "$3" "${6:-}" 2>"$work/log"; then
         got=$(paste -sd'|' - <"$work/resolv.conf" | sed 's/|/ | /g')
     else
         cat "$work/log" >&2
@@ -227,6 +263,20 @@ nameserver 2606:4700:4700::1111" "
 nameserver 2606:4700:4700::1111
 nameserver 1.1.1.1
 nameserver 8.8.8.8"
+    dns "a dhcp resolver that cannot resolve gives way to ours" "$shell" 4 "
+nameserver 203.0.113.53" "
+nameserver 1.1.1.1
+nameserver 8.8.8.8" 203.0.113.53
+    dns "only the dead one of two dhcp resolvers goes" "$shell" 4 "
+nameserver 203.0.113.53
+nameserver 203.0.113.54" "
+nameserver 203.0.113.54" 203.0.113.53
+    dns "a dead ipv6 resolver gives way to ours, the ipv4 one stays" "$shell" 46 "
+nameserver 203.0.113.53
+nameserver 2001:db8::53" "
+nameserver 203.0.113.53
+nameserver 2606:4700:4700::1111
+nameserver 2001:4860:4860::8888" 2001:db8::53
 done
 
 finish

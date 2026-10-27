@@ -80,6 +80,10 @@ Usage: ./reinstall.sh debian   10|11|12|13
                                                   the image's cloud-init as a NoCloud seed)
                       [--hostname NAME]          (not with dd; default: the image's own, "debian"
                                                   when a Debian image has none)
+                      [--hold 0|1|2]             (0: pause before the initrd is packed, to edit
+                                                  its files by hand; 1: stop in the temporary
+                                                  Alpine with SSH up; 2: install, then stop
+                                                  there instead of rebooting)
                       [--timezone TZ]            (default: UTC)
                       [--detect-timezone]        (auto-detect via ipapi.co, leaks IP)
                       [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
@@ -2518,7 +2522,7 @@ This script is outdated, please download reinstall.sh again."
 
     if [ "$hold" = 0 ]; then
         info 'hold 0'
-        read -r -p 'Press Enter to continue...'
+        read -r -p "Edit the initrd's files under $initrd_dir, then press Enter to pack them..."
     fi
 
     # 重建

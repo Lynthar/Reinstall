@@ -84,11 +84,12 @@ ssh -L 8080:127.0.0.1:80 root@your-server
 `/tmp/reinstall-debug.tar.gz`，里面有 IP 地址和安装日志，发给别人之前先看一眼。
 
 其它常用旗标：`--timezone`、`--ssh-port`、`--web-port`、`--no-web`、
-`--hold 1|2`（停在安装环境或装完不重启）、`--force-boot-mode bios|efi`、`-x` 调试、
+`--hold 0|1|2`（0 在打包临时系统之前停下、可以手改里面的文件，1 停在安装环境，2 装完不重启）、`--force-boot-mode bios|efi`、`-x` 调试、
 `--commit <SHA>` 钉住引导脚本的版本，`--hostname <名字>` 设主机名（dd 不收；不给时用镜像
 自带的，Debian 镜像没带就是 `debian`）。没有配置文件也没有环境变量，行为全部由旗标决定。
 DHCP 给了 DNS 就用 DHCP 的；静态网络的机器写成 `1.1.1.1` 与 `8.8.8.8`（IPv6 对应
-Cloudflare 与 Google），不沿用原系统的设置。
+Cloudflare 与 Google），不沿用原系统的设置。临时系统里 DHCP 给的 DNS 解析不了时也换成这两个，
+但装好的系统走 DHCP 时照旧用 DHCP 给的。
 
 静态 IP 的机器（没有 DHCP）上 dd 要当心：镜像照原样写进去，得自己带着这台机器的地址，
 否则重启后那一族网络起不来，全是静态的就连不上了。临时系统写盘前会在屏幕和日志里列出
