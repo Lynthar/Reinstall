@@ -378,8 +378,19 @@ add_missing_dns() {
     fi
 }
 
-drop_dead_dns
-add_missing_dns
+# 哪一族一个能用的 DNS 都没剩就记下来：add_missing_dns 接着补上的，trans.sh 也写进新系统。
+# v6 只认 DHCPv6 给了却全删了的：这里不收 RA 里的 RDNSS，没有 v6 DNS 不等于网络没给
+settle_dns() {
+    is_have_ipv6_dns && had_ipv6_dns=true || had_ipv6_dns=false
+    drop_dead_dns
+    $dhcpv4 && $ipv4_has_internet && ! is_have_ipv4_dns &&
+        should_add_ipv4_static_dns=true || should_add_ipv4_static_dns=false
+    $dhcpv6_or_slaac && $ipv6_has_internet && $had_ipv6_dns && ! is_have_ipv6_dns &&
+        should_add_ipv6_static_dns=true || should_add_ipv6_static_dns=false
+    add_missing_dns
+}
+
+settle_dns
 
 # 传参给 trans.start
 netconf="/dev/netconf/$ethx"
@@ -389,6 +400,8 @@ $dhcpv6_or_slaac && echo 1 >"$netconf/dhcpv6_or_slaac" || echo 0 >"$netconf/dhcp
 $should_disable_dhcpv4 && echo 1 >"$netconf/should_disable_dhcpv4" || echo 0 >"$netconf/should_disable_dhcpv4"
 $should_disable_accept_ra && echo 1 >"$netconf/should_disable_accept_ra" || echo 0 >"$netconf/should_disable_accept_ra"
 $should_disable_autoconf && echo 1 >"$netconf/should_disable_autoconf" || echo 0 >"$netconf/should_disable_autoconf"
+$should_add_ipv4_static_dns && echo 1 >"$netconf/should_add_ipv4_static_dns" || echo 0 >"$netconf/should_add_ipv4_static_dns"
+$should_add_ipv6_static_dns && echo 1 >"$netconf/should_add_ipv6_static_dns" || echo 0 >"$netconf/should_add_ipv6_static_dns"
 echo "$mac_addr" >"$netconf/mac_addr"
 echo "$ipv4_addr" >"$netconf/ipv4_addr"
 echo "$ipv4_gateway" >"$netconf/ipv4_gateway"

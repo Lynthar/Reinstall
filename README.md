@@ -59,7 +59,7 @@ sudo bash reinstall.sh dd --img "https://example.com/x.img.xz"
 
 Alpine 宿主默认没有 `sudo` 和 `bash`：以 root 直接 `sh reinstall.sh …` 就行，
 脚本会自己装上 bash。
-不写版本号就取该系列最新的一个。口令建议从 stdin 给，不要用 `--password`——
+口令建议从 stdin 给，不要用 `--password`——
 后者会进 `ps` 和 history：
 
 ```bash
@@ -88,8 +88,10 @@ ssh -L 8080:127.0.0.1:80 root@your-server
 `--commit <SHA>` 钉住引导脚本的版本，`--hostname <名字>` 设主机名（dd 不收；不给时用镜像
 自带的，Debian 镜像没带就是 `debian`）。没有配置文件也没有环境变量，行为全部由旗标决定。
 DHCP 给了 DNS 就用 DHCP 的；静态网络的机器写成 `1.1.1.1` 与 `8.8.8.8`（IPv6 对应
-Cloudflare 与 Google），不沿用原系统的设置。临时系统里 DHCP 给的 DNS 解析不了时也换成这两个，
-但装好的系统走 DHCP 时照旧用 DHCP 给的。
+Cloudflare 与 Google），不沿用原系统的设置。临时系统逐个试 DHCP 给的 DNS，解析不了的删掉，
+哪一族一个不剩（或 DHCP 本来就没给）就补上这两个。装好的 Debian 12 / 13、Ubuntu 与
+`--cloud-init-network` 写的种子会把补上的也写进网络配置，和 DHCP 给的一起用（IPv6 只在
+DHCPv6 给的全都解析不了时这样做）；Debian 10 / 11 与 Alpine 仍只用 DHCP 给的。
 
 静态 IP 的机器（没有 DHCP）上 dd 要当心：镜像照原样写进去，得自己带着这台机器的地址，
 否则重启后那一族网络起不来，全是静态的就连不上了。临时系统写盘前会在屏幕和日志里列出
@@ -129,34 +131,35 @@ sudo bash reinstall.sh reset
 
 ## 安全
 
-**校验覆盖的是哪一段，说清楚**：Ubuntu 云镜像做 GPG 签名校验（签名必须出自脚本里
-钉住的那把密钥）加 SHA256，Debian 云镜像做 SHA512 完整性校验；签过名的校验和在动硬盘之前
-就取回验过，下载完只比对镜像哈希。**`dd` 模式不校验任何东西**
+**校验覆盖到哪一段**：Ubuntu 云镜像做 GPG 签名校验（签名必须出自脚本里
+钉住的那把密钥）加 SHA256，Debian 云镜像做 SHA512 完整性校验；校验和（Ubuntu 的连同签名）
+在动硬盘之前就取回、验过，下载完只比对镜像哈希。**`dd` 模式不校验任何东西**
 ——镜像的完整性由你自己负责。
 
 **引导脚本按 commit 钉住**：运行时会把 raw 地址解析成 40 位 commit SHA 再取脚本，
 也可以用 `--commit` 自己指定一个（只接受 40 位小写十六进制）。解析不出来就直接报错退出，
 不会退回分支引用——退回去等于没钉。
 
-**下载并非全程严格 HTTPS**：临时 Alpine 启动时自己取的两样走明文 HTTP（脚本里有注释说明
-是为了绕开某些云厂商 ARM 机器上时钟未同步导致 TLS 失败）——apk 软件包靠 apk 自带的签名校验，
+**下载并非全程严格 HTTPS**：临时 Alpine 启动时自己取的两样（软件仓库与 modloop）走明文
+HTTP，因为甲骨文云的 ARM 机器在那个阶段还没同步时钟，HTTPS 会失败。apk 软件包靠 apk 自带的签名校验，
 modloop 必须与开机前经 HTTPS 取得的那份 SHA-256 一致才挂载，否则启动停在那一步。
 其余下载**默认校验 TLS 证书**；宿主的 CA 库坏掉时（32 位 Cygwin 是已知的一例）可以加
 `--allow-insecure-bootstrap` 关掉校验，**代价是 `trans.sh`、临时 Alpine 与 Ubuntu 签名密钥
 都可以在传输中被替换**，加上这个旗标会打一条警告。
 
-**装完之后 root 登录是开着的**：给了 SSH key 就写进 `authorized_keys` 并允许 root
-用 key 登录；没给 key 就设一个 root 密码并允许密码登录。装好第一件事该是收紧它。
+**装完之后 root 登录是开着的**：给了 SSH key 就写进 root 的 `authorized_keys`，root 用 key
+登录，密码字段是 `*`，没有密码能登，控制台也不行；没给 key 就设一个 root 密码，并打开 sshd 的
+root 密码登录。装好第一件事该是收紧它。
 
 **`--ssh-key` 接受 `http://` 地址**——那意味着公钥可以在传输中被替换成别人的。
 请只用 `https://` 或 `github:` / `gitlab:`。
 
 **日志页默认只绑 `127.0.0.1` 且没有鉴权。** `--web-public` 会把它绑到 `0.0.0.0`
-并打一条警告；正确的看法是用 SSH 端口转发。
+并打一条警告；要从别处看，用 SSH 端口转发。
 
 **隐私默认值**：时区默认 UTC，要按 IP 猜时区得显式加 `--detect-timezone`（那会把你的
-IP 交给第三方服务，帮助信息里就这么写着）；口令用 `read -s` 读、不回显；日志与 web
-输出都过滤掉密码和 token。
+IP 交给第三方服务，帮助信息里就这么写着）；口令用 `read -s` 读、不回显；打印口令的行都带
+password 字样，写日志时整行丢掉；临时系统只拿到口令的 SHA-512 哈希。
 
 ## 能力边界
 
@@ -169,7 +172,7 @@ IP 交给第三方服务，帮助信息里就这么写着）；口令用 `read -
   动手之前就报错退出。openSUSE 的 btrfs 例外，它的 GRUB 为此打了补丁。
 - **`dd` 模式不改密码、不配网络、不装驱动**——镜像必须自带能用的配置，唯一的例外是
   显式加了 `--cloud-init-network` 时写进去的网络种子。
-  写盘前会核镜像开头分区表里最后一个分区装不装得下目标盘，装不下就退出；
+  写盘前会读镜像开头的分区表，最后一个分区的末尾超出目标盘就退出；
   读不出分区表的镜像不核。
 - **Debian 要的盘比镜像本身大**：云镜像的整个虚拟盘（Debian 13 是 3 GiB）要和存放下载的
   分区一起放得下，arm64 的 Debian 13 约要 3.5 GiB。放不下的话临时系统在擦盘之前退出，
@@ -186,9 +189,9 @@ IP 交给第三方服务，帮助信息里就这么写着）；口令用 `read -
 ## 与上游的区别
 
 上游 [bin456789/reinstall](https://github.com/bin456789/reinstall) 支持面大得多——
-Windows、RHEL 系、传统安装器、netboot.xyz、国内镜像自适配。我把这些全砍了，换来短
-一半左右的脚本和隐私优先的默认值：不做 IP 地理定位、默认 UTC、密码不进 `ps` 和 shell
-history、引导脚本按 commit SHA 钉住、云镜像验签。
+Windows、RHEL 系、传统安装器、netboot.xyz、国内镜像自适配。我把这些全砍了，换来不到
+上游一半长的脚本和隐私优先的默认值：不做 IP 地理定位、默认 UTC、密码不进 `ps` 和 shell
+history、引导脚本按 commit SHA 钉住、Ubuntu 云镜像验签。
 
 **如果你在 GFW 内、或者需要装 Windows 和 RHEL 系，请直接用上游**，那才是它的主场。
 

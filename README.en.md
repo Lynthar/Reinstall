@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/github/license/Lynthar/Reinstall)](LICENSE)
 [![shellcheck](https://img.shields.io/github/actions/workflow/status/Lynthar/Reinstall/shellcheck.yml?branch=main&label=shellcheck)](https://github.com/Lynthar/Reinstall/actions/workflows/shellcheck.yml)
 
-Privacy-first VPS reinstall script: DD any raw image, or Debian/Ubuntu cloud images and Alpine. UTC by default.
+Privacy-first VPS reinstall script: DD any raw image, or Debian/Ubuntu cloud images and Alpine. UTC by default, no IP geolocation.
 
 English | [简体中文](README.md)
 
@@ -67,8 +67,7 @@ sudo bash reinstall.sh dd --img "https://example.com/x.img.xz"
 
 An Alpine host has neither `sudo` nor `bash` by default: as root, `sh reinstall.sh …`
 works, and the script installs bash itself.
-Leaving the version off picks the newest in that series. Prefer stdin for the
-password — `--password` lands in `ps` and history:
+Prefer stdin for the password — `--password` lands in `ps` and history:
 
 ```bash
 printf '%s' "$PW" | sudo bash reinstall.sh --password-stdin debian 12
@@ -92,7 +91,7 @@ login to read it. Don't reboot or power off from the provider's panel while it
 installs: once it is writing the disk, neither the old nor the new system can
 boot. If something fails, the screen says whether the disk was touched. If it
 wasn't, `reboot` goes back to the current system; if it was, don't reboot — fix
-the cause over SSH and run `/trans.sh` again. The scene is packed into
+the cause over SSH and run `/trans.sh` again. A debug bundle goes to
 `/tmp/reinstall-debug.tar.gz`; it holds IP addresses and the install log, so read
 it before you share it.
 
@@ -105,8 +104,11 @@ get the image's own name, or `debian` when a Debian image has none). There's no
 config file and no environment variables — everything is a flag. DNS comes from
 DHCP when the network hands it out; on a static network it is set to `1.1.1.1` and
 `8.8.8.8` (Cloudflare and Google for IPv6), not carried over from the old system.
-The installer environment also swaps in those two when DHCP's servers can't resolve,
-but an installed system on DHCP still uses whatever DHCP hands out.
+The installer environment tries each DHCP server and drops the ones that can't
+resolve; when a family has none left, or DHCP gave none, it adds those two. An
+installed Debian 12 / 13 or Ubuntu, and the `--cloud-init-network` seed, then list
+them in the network config next to whatever DHCP hands out (for IPv6 only when
+every DHCPv6 server failed); Debian 10 / 11 and Alpine stay with DHCP's.
 
 Take care with `dd` on a machine with a static IP (no DHCP): the image goes on as
 it is, so it has to carry this machine's addresses itself, or that address family
@@ -164,11 +166,11 @@ does this itself.
 
 ## Security
 
-**Be clear about what is and isn't verified.** Ubuntu cloud images get GPG
+**What is and isn't verified.** Ubuntu cloud images get GPG
 signature verification (the signature must come from the key pinned in the
 script) plus SHA256; Debian cloud images get SHA512 integrity checking. The
-signed checksums are fetched and verified before the disk is touched; only the
-downloaded image's hash is compared afterwards. **`dd` mode
+checksums, and Ubuntu's signature over them, are fetched and checked before the
+disk is touched; only the downloaded image's hash is compared afterwards. **`dd` mode
 verifies nothing** — the image's integrity is on you.
 
 **The bootstrap is pinned to a commit.** At runtime the raw URL is resolved to a
@@ -177,9 +179,9 @@ verifies nothing** — the image's integrity is on you.
 run aborts rather than falling back to the branch ref, which would pin nothing.
 
 **Downloads are not strictly HTTPS end to end.** Two things the temporary Alpine
-fetches for itself while booting go over plain HTTP — there's a comment
-explaining it works around clocks that aren't synced yet on some ARM instances.
-Its apk packages are checked against apk's own signatures, and the modloop is
+fetches for itself while booting, its package repository and the modloop, go over
+plain HTTP: Oracle Cloud's ARM instances haven't synced their clock at that point,
+and HTTPS would fail. Its apk packages are checked against apk's own signatures, and the modloop is
 only mounted if it matches the SHA-256 taken over HTTPS before the reboot;
 otherwise the boot stops there. Everything else **verifies TLS certificates by
 default**. Hosts with a broken CA store (32-bit Cygwin is the known one) can
@@ -188,20 +190,23 @@ turn that off with `--allow-insecure-bootstrap`, **at the price of letting
 transit**; the flag prints a warning when you use it.
 
 **Root login is enabled when it finishes.** With an SSH key, that key is written
-to `authorized_keys` and root key login is allowed; without one, a root password
-is set and password login is allowed. Tightening that should be your first move.
+to root's `authorized_keys` and root logs in with it; the root password field is
+`*`, so no password works, not even on the console. Without a key, a root password
+is set and sshd's root password login is turned on. Tightening that should be your
+first move.
 
 **`--ssh-key` accepts `http://` URLs**, which means the key can be swapped in
 transit. Use `https://`, `github:` or `gitlab:` instead.
 
 **The log page binds to `127.0.0.1` and has no authentication.**
-`--web-public` binds it to `0.0.0.0` and warns you; SSH port forwarding is the
-right answer.
+`--web-public` binds it to `0.0.0.0` and warns you; to view it from elsewhere,
+use SSH port forwarding.
 
 **Privacy-first defaults.** The timezone is UTC unless you pass
 `--detect-timezone`, which hands your IP to a third-party service — the help text
-says so. Passwords are read with `read -s` without echo, and get filtered out of
-both the log and the web output.
+says so. Passwords are read with `read -s` without echo. Every line that prints
+one says "password", and the log drops those lines whole; the temporary system only
+ever gets the password's SHA-512 hash.
 
 ## Limitations
 
@@ -241,9 +246,10 @@ both the log and the web output.
 Upstream [bin456789/reinstall](https://github.com/bin456789/reinstall) supports
 far more — Windows, RHEL-family, traditional installers, netboot.xyz, mirror
 selection for networks inside China. I dropped all of that in exchange for
-scripts about half the length and privacy-first defaults: no IP geolocation, UTC
-unless you say otherwise, passwords kept out of `ps` and shell history, the
-bootstrap pinned to a commit SHA, and signature checks on cloud images.
+scripts less than half upstream's length and privacy-first defaults: no IP
+geolocation, UTC unless you say otherwise, passwords kept out of `ps` and shell
+history, the bootstrap pinned to a commit SHA, and signature checks on Ubuntu
+cloud images.
 
 **If you're behind the GFW, or need Windows or a RHEL-family target, use
 upstream** — that's what it's for.

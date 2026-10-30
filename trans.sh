@@ -769,6 +769,19 @@ should_disable_autoconf() {
     [ "$should_disable_autoconf" = 1 ]
 }
 
+# initrd-network.sh 发现 DHCP 没给能解析的 DNS，这一族的 DNS 是它补的
+should_add_ipv4_static_dns() {
+    get_netconf_to should_add_ipv4_static_dns
+    # shellcheck disable=SC2154
+    [ "$should_add_ipv4_static_dns" = 1 ]
+}
+
+should_add_ipv6_static_dns() {
+    get_netconf_to should_add_ipv6_static_dns
+    # shellcheck disable=SC2154
+    [ "$should_add_ipv6_static_dns" = 1 ]
+}
+
 is_slaac() {
     # 如果是静态（包括自动获取到 IP 但无法联网而切换成静态）直接返回 1，不考虑 ra
     # 防止部分机器slaac/dhcpv6获取的ip/网关无法上网
@@ -1806,8 +1819,13 @@ create_cloud_init_network_v2() {
             driver=$(basename "$(readlink -f /sys/class/net/$ethx/device/driver)")
             info false "$ethx has a NIC with its MAC under it (Azure's accelerated networking VF): matching $ethx by driver $driver as well"
         fi
+        # DHCP 没给能用的 DNS 时把临时系统补的写进去：resolved 编译时没有 FallbackDNS，不写就没有 DNS。
+        # networkd 把它们和 DHCP 给的合在一起用
         if is_dhcpv4; then
             v4=dhcp
+            if should_add_ipv4_static_dns; then
+                dns=$(get_current_dns 4)
+            fi
         elif is_staticv4; then
             v4=static
             get_netconf_to ipv4_addr
@@ -1824,7 +1842,7 @@ create_cloud_init_network_v2() {
         if should_disable_accept_ra; then
             accept_ra=false
         fi
-        if is_need_manual_set_dnsv6; then
+        if is_need_manual_set_dnsv6 || { [ "$v6" = dhcp ] && should_add_ipv6_static_dns; }; then
             dns="$dns $(get_current_dns 6)"
         fi
 

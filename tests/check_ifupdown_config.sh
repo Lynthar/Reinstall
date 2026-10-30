@@ -2,8 +2,8 @@
 # Runs create_ifupdown_config from trans.sh on stubbed probe results: /dev/netconf as
 # initrd-network.sh leaves it, an rdisc6 answer and resolv.conf. The file it writes is
 # the only network config alpine and debian 10 / 11 get, so a wrong stanza means no network.
-# Also runs initrd-network.sh's drop_dead_dns and add_missing_dns, which settle that
-# resolv.conf: what they keep or add is what the static stanzas and debian's resolv.conf carry.
+# Also runs initrd-network.sh's settle_dns, which settles that resolv.conf: what it keeps or
+# adds is what the static stanzas carry, and the families it flags go into netplan as well.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -188,7 +188,7 @@ auto eth0
 iface eth0 inet6 auto"
 done
 
-# drop_dead_dns then add_missing_dns, as initrd-network.sh runs them. ip answers "is there a
+# settle_dns: drop_dead_dns, the flags, then add_missing_dns. ip answers "is there a
 # default route" per family from $routes; nslookup answers only for the host setos_alpine
 # fetches the modloop from, and never from a server listed in $DEAD_DNS.
 mirror_host=$(extract_fn "$repo/reinstall.sh" setos_alpine | sed -n 's,^ *mirror=\([^/]*\)/.*,\1,p')
@@ -211,7 +211,7 @@ STUBS
 initrd=$repo/initrd-network.sh
 {
     grep -E '^(ipv[46]_dns[12]|dns_test_host)=' "$initrd"
-    for fn in is_have_ipv4_dns is_have_ipv6_dns drop_dead_dns add_missing_dns; do
+    for fn in is_have_ipv4_dns is_have_ipv6_dns drop_dead_dns add_missing_dns settle_dns; do
         extract_fn "$initrd" "$fn"
     done
 } | sed "s|/etc/resolv.conf|$work/resolv.conf|g" >"$work/dns_fns.sh"
@@ -221,8 +221,12 @@ set -eE
 . "$work/dns_fns.sh"
 routes=\$1
 DEAD_DNS=\$2
-drop_dead_dns >/dev/null
-add_missing_dns
+# what initrd-network.sh probed before: the ones named in \$3 are true
+for v in dhcpv4 ipv4_has_internet dhcpv6_or_slaac ipv6_has_internet; do
+    case " \$3 " in *" \$v "*) eval \$v=true ;; *) eval \$v=false ;; esac
+done
+settle_dns >/dev/null
+echo "\$should_add_ipv4_static_dns \$should_add_ipv6_static_dns" >"$work/carry"
 CASE
 
 # dns <label> <shell> <families with a default route> <resolv.conf before> <after> [dead servers]
@@ -238,6 +242,22 @@ dns() {
         got="exited non-zero"
     fi
     check "$2 / $1" "$got" "$want"
+}
+
+# carry <label> <shell> <families with a default route> <resolv.conf before> <dead servers>
+#       <true probes> <expected "ipv4 ipv6" flags for trans.sh>
+carry() {
+    local got
+    printf '%s\n' "$4" | sed '/^$/d' >"$work/resolv.conf"
+    rm -f "$work/carry"
+    # shellcheck disable=SC2086
+    if $2 "$work/dns_case.sh" "$3" "$5" "$6" 2>"$work/log"; then
+        got=$(cat "$work/carry")
+    else
+        cat "$work/log" >&2
+        got="exited non-zero"
+    fi
+    check "$2 / carry: $1" "$got" "$7"
 }
 
 for shell in "${shells[@]}"; do
@@ -277,6 +297,17 @@ nameserver 2001:db8::53" "
 nameserver 203.0.113.53
 nameserver 2606:4700:4700::1111
 nameserver 2001:4860:4860::8888" 2001:db8::53
+
+    v4="dhcpv4 ipv4_has_internet"
+    v6="dhcpv6_or_slaac ipv6_has_internet"
+    carry "dhcp's only ipv4 resolver is dead" "$shell" 4 "nameserver 203.0.113.53" 203.0.113.53 "$v4" "true false"
+    carry "dhcp gave no ipv4 resolver" "$shell" 4 "" "" "$v4" "true false"
+    carry "a live ipv4 resolver is left" "$shell" 4 "nameserver 203.0.113.53
+nameserver 203.0.113.54" 203.0.113.53 "$v4" "false false"
+    carry "static ipv4 without a resolver" "$shell" 4 "" "" ipv4_has_internet "false false"
+    carry "dhcpv6's only resolver is dead" "$shell" 6 "nameserver 2001:db8::53" 2001:db8::53 "$v6" "false true"
+    # the temporary system takes no RDNSS, so no ipv6 resolver before says nothing
+    carry "no ipv6 resolver to begin with" "$shell" 6 "" "" "$v6" "false false"
 done
 
 finish

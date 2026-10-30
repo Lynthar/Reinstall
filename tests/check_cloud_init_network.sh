@@ -32,6 +32,7 @@ STUBS
 for fn in get_eths get_netconf_to get_ra_to show_netconf get_current_dns \
     is_dhcpv4 is_staticv4 is_staticv6 is_dhcpv6_or_slaac is_ipv4_has_internet is_ipv6_has_internet \
     should_disable_dhcpv4 should_disable_accept_ra should_disable_autoconf is_slaac is_dhcpv6 \
+    should_add_ipv4_static_dns should_add_ipv6_static_dns \
     is_have_ipv6 is_enable_other_flag is_have_rdnss is_need_manual_set_dnsv6 \
     create_cloud_init_network_v2 create_netplan_config warn_static_network; do
     extract_fn "$trans" "$fn"
@@ -66,7 +67,8 @@ netconf() {
     [ "$nic" = eth1 ] || rm -rf "$work/netconf"
     mkdir -p "$work/netconf/$nic"
     for key in dhcpv4 dhcpv6_or_slaac should_disable_dhcpv4 should_disable_accept_ra \
-        should_disable_autoconf ipv4_has_internet ipv6_has_internet; do
+        should_disable_autoconf should_add_ipv4_static_dns should_add_ipv6_static_dns \
+        ipv4_has_internet ipv6_has_internet; do
         echo 0 >"$work/netconf/$nic/$key"
     done
     for key in ipv4_addr ipv4_gateway ipv6_addr ipv6_gateway; do
@@ -198,6 +200,40 @@ ethernets:
     dhcp4: true
     dhcp6: true'
     : >"$work/v6addr"
+
+    # DHCP gave no DNS that resolved, so the temporary system's go along with DHCP's
+    netconf eth0 52:54:00:12:34:56 dhcpv4=1 ipv4_has_internet=1 should_add_ipv4_static_dns=1
+    expect "dhcp4 without a usable dns" "$shell" '
+version: 2
+ethernets:
+  eth0:
+    match:
+      macaddress: "52:54:00:12:34:56"
+    dhcp4: true
+    nameservers:
+      addresses:
+        - "1.1.1.1"
+        - "8.8.8.8"'
+
+    netconf eth0 52:54:00:12:34:56 dhcpv4=1 dhcpv6_or_slaac=1 ipv4_has_internet=1 ipv6_has_internet=1 \
+        should_add_ipv6_static_dns=1
+    ra Yes No No 2606:4700:4700::1111
+    expect "slaac whose dhcpv6 dns all failed" "$shell" '
+version: 2
+ethernets:
+  eth0:
+    match:
+      macaddress: "52:54:00:12:34:56"
+    dhcp4: true
+    dhcp6: true
+    nameservers:
+      addresses:
+        - "2606:4700:4700::1111"'
+    # the flag alone, with no dynamic ipv6 left on the nic
+    netconf eth0 52:54:00:12:34:56 dhcpv4=1 ipv4_has_internet=1 should_add_ipv6_static_dns=1
+    # shellcheck disable=SC2086
+    check "$shell / ipv6 dns flag without dynamic ipv6: no nameservers" \
+        "$($shell "$work/case.sh" config >/dev/null 2>&1 && grep -c nameservers "$work/network-config" || true)" 0
 
     netconf eth0 52:54:00:12:34:56 dhcpv6_or_slaac=1 should_disable_accept_ra=1 should_disable_autoconf=1 \
         ipv6_has_internet=1 ipv6_addr=2001:db8::10/64 ipv6_gateway=2001:db8::1

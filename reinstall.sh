@@ -67,7 +67,9 @@ usage_and_exit() {
 Usage: ./reinstall.sh debian   10|11|12|13
                       ubuntu   18.04|20.04|22.04|24.04|26.04|26.10 [--minimal]
                       alpine   3.22|3.23|3.24
-                      dd       --img="https://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
+                      dd       --img="https://xxx.com/yyy.zzz"
+                                                 (a raw disk image or a fixed-size VHD, optionally
+                                                  in a tar and/or gzip, xz or zstd)
                       reset    (before rebooting: undo what the last run changed)
 
        Options:       [--password PASSWORD | --password-stdin]
@@ -87,6 +89,9 @@ Usage: ./reinstall.sh debian   10|11|12|13
                       [--timezone TZ]            (default: UTC)
                       [--detect-timezone]        (auto-detect via ipapi.co, leaks IP)
                       [--commit SHA]             (pin to specific commit; default: auto-resolve HEAD)
+                      [--force-boot-mode bios|efi]
+                                                 (treat the machine as BIOS or EFI instead of detecting it)
+                      [-x | --debug]             (trace every command; the password stays out)
                       [--allow-insecure-bootstrap]
                                                  (skip TLS certificate checks on every download.
                                                   trans.sh, the temporary Alpine and the Ubuntu
@@ -143,10 +148,10 @@ error_and_exit() {
     exit 1
 }
 
-show_dd_password_tips() {
+show_dd_login_tips() {
     warn false "
-This password is only used for SSH access to view logs during the installation.
-The image's own passwords are not changed.
+This root password or SSH key only logs you into the temporary system during the installation.
+The image's own users, passwords and keys are not changed.
 "
 }
 
@@ -1247,7 +1252,7 @@ prompt_password() {
         return
     fi
     if is_use_dd; then
-        show_dd_password_tips
+        show_dd_login_tips
     fi
     info "prompt password"
     warn false "Leave blank to use a random password."
@@ -3042,8 +3047,8 @@ if [ -n "$ssh_port" ]; then
     echo "SSH Port: $ssh_port"
 fi
 
-if is_use_dd && [ -z "$ssh_keys" ]; then
-    show_dd_password_tips
+if is_use_dd; then
+    show_dd_login_tips
 fi
 if is_alpine_live; then
     echo 'Reboot to start Alpine Live OS, then SSH into it with the login above.'
@@ -3056,6 +3061,7 @@ else
     else
         echo "Reboot to start the installation."
     fi
+    warn false "It erases the whole disk the current system is on, every partition included."
     echo "After the reboot, SSH into the temporary Alpine system with the login above to follow /reinstall.log."
     echo "Until it finishes, do not reboot or power off from the provider's panel:"
     echo "once it is writing the disk, neither the current nor the new system can boot."
