@@ -104,12 +104,12 @@ expect() {
     check "$2 / $1" "$got" "$(sed '1{/^$/d;}' <<<"$3")"
 }
 
-# drivers <shell>: how many driver lines a freshly written network-config has.
-drivers() {
+# count <shell> <pattern>: how many lines of a freshly written network-config match.
+count() {
     rm -f "$work/network-config"
     # shellcheck disable=SC2086
     if $1 "$work/case.sh" config >/dev/null 2>"$work/log"; then
-        grep -c 'driver:' "$work/network-config" || true
+        grep -c "$2" "$work/network-config" || true
     else
         echo "exited non-zero"
     fi
@@ -231,9 +231,7 @@ ethernets:
         - "2606:4700:4700::1111"'
     # the flag alone, with no dynamic ipv6 left on the nic
     netconf eth0 52:54:00:12:34:56 dhcpv4=1 ipv4_has_internet=1 should_add_ipv6_static_dns=1
-    # shellcheck disable=SC2086
-    check "$shell / ipv6 dns flag without dynamic ipv6: no nameservers" \
-        "$($shell "$work/case.sh" config >/dev/null 2>&1 && grep -c nameservers "$work/network-config" || true)" 0
+    check "$shell / ipv6 dns flag without dynamic ipv6: no nameservers" "$(count "$shell" nameservers:)" 0
 
     netconf eth0 52:54:00:12:34:56 dhcpv6_or_slaac=1 should_disable_accept_ra=1 should_disable_autoconf=1 \
         ipv6_has_internet=1 ipv6_addr=2001:db8::10/64 ipv6_gateway=2001:db8::1
@@ -301,12 +299,12 @@ ethernets:
     dhcp4: true'
     # each breaks one premise: the vf is under another nic, has another mac, eth0 has no driver
     echo "${azure_links/master eth0/master eth2}" >"$work/links"
-    check "$shell / same mac under another nic: no driver" "$(drivers "$shell")" 0
+    check "$shell / same mac under another nic: no driver" "$(count "$shell" driver:)" 0
     sed '2s/60:45:bd:54:aa:57/60:45:bd:54:aa:58/' <<<"$azure_links" >"$work/links"
-    check "$shell / another mac under eth0: no driver" "$(drivers "$shell")" 0
+    check "$shell / another mac under eth0: no driver" "$(count "$shell" driver:)" 0
     echo "$azure_links" >"$work/links"
     rm "$work/sys/class/net/eth0/device/driver"
-    check "$shell / eth0 without a driver: no driver" "$(drivers "$shell")" 0
+    check "$shell / eth0 without a driver: no driver" "$(count "$shell" driver:)" 0
     check "$shell / eth0 without a driver: still matched by mac" \
         "$(grep -c 'macaddress: "60:45:bd:54:aa:57"' "$work/network-config")" 1
     : >"$work/links"
